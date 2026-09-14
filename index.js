@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Events, REST, Routes } = require('discord.js');
+const { parse: parseNbt, simplify: simplifyNbt } = require('prismarine-nbt');
 
 const client = new Client({
   intents: [
@@ -88,6 +89,91 @@ function formatCoins(n) {
   return Math.round(n).toString();
 }
 
+const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
+const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
+
+async function countGlossiesInNbt(data) {
+  if (!data) return 0;
+  try {
+    const buffer = Buffer.from(data, 'base64');
+    const { parsed } = await parseNbt(buffer);
+    const simple = simplifyNbt(parsed);
+    const items = Array.isArray(simple.i) ? simple.i : [];
+    let total = 0;
+    for (const item of items) {
+      if (item && item.id === GLOSSY_ITEM_ID) total += Number(item.Count) || 0;
+    }
+    return total;
+  } catch (err) {
+    return 0;
+  }
+}
+
+async function countContainer(value) {
+  if (typeof value === 'string') return countGlossiesInNbt(value);
+  if (Array.isArray(value)) {
+    let total = 0;
+    for (const entry of value) {
+      total += await countContainer(entry && entry.data);
+    }
+    return total;
+  }
+  if (value && typeof value.data === 'string') return countGlossiesInNbt(value.data);
+  return 0;
+}
+
+async function getPlayerGlossies(name) {
+  if (!process.env.HYPIXEL_API_KEY) return null;
+
+  const mojangRes = await fetch(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(name)}`, {
+    headers: { 'User-Agent': 'GlossyGemstoneBot/1.0' },
+  });
+  if (!mojangRes.ok) return null;
+  const mojang = await mojangRes.json();
+  const uuid = mojang && mojang.id;
+  if (!uuid) return null;
+
+  const res = await fetch(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, {
+    headers: { 'API-Key': process.env.HYPIXEL_API_KEY },
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  if (!json.success || !Array.isArray(json.profiles) || json.profiles.length === 0) return null;
+
+  const sorted = json.profiles
+    .map((profile) => {
+      const member = profile.members && profile.members[uuid] ? profile.members[uuid] : null;
+      return {
+        profile,
+        member,
+        firstJoin: member && member.first_join ? member.first_join : Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .sort((a, b) => a.firstJoin - b.firstJoin);
+
+  const { profile, member } = sorted[0];
+  if (!member) return null;
+
+  const candidates = [
+    member.inv_contents,
+    member.armor,
+    member.ender_chest_contents,
+    member.storage,
+    member.backpack_contents,
+    member.wardrobe_contents,
+    member.equipment_contents,
+    profile.vault,
+    profile.sacks_containers,
+  ];
+
+  let total = 0;
+  for (const candidate of candidates) {
+    total += await countContainer(candidate);
+  }
+
+  return { count: total, profileName: profile.cute_name || 'Unknown' };
+}
+
 async function buildGlossyEmbed() {
   const res = await fetch('https://sky.coflnet.com/api/bazaar/GLOSSY_GEMSTONE/history/week');
   const history = await res.json();
@@ -155,6 +241,22 @@ async function buildGlossyEmbed() {
 
   const lastDate = new Date(last.timestamp);
 
+  let glossiesField;
+  if (!process.env.HYPIXEL_API_KEY) {
+    glossiesField = 'Add **HYPIXEL_API_KEY** on Railway to enable this.';
+  } else {
+    const results = await Promise.allSettled(GLOSSY_PLAYERS.map((player) => getPlayerGlossies(player)));
+    glossiesField = results
+      .map((result, index) => {
+        const name = GLOSSY_PLAYERS[index];
+        if (result.status === 'fulfilled' && result.value !== null) {
+          return `• **${name}** — ${result.value.count} (${result.value.profileName})`;
+        }
+        return `• **${name}** — N/A (API desligada)`;
+      })
+      .join('\n');
+  }
+
   const embed = new EmbedBuilder()
     .setColor(0x00d26a)
     .setTitle('Glossy Gemstone - Bazaar Price')
@@ -164,6 +266,7 @@ async function buildGlossyEmbed() {
       `**7-day change:** ${change >= 0 ? '+' : ''}${formatCoins(change)} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%)\n` +
       `**Min / Max (7d):** ${formatCoins(minPrice)} / ${formatCoins(maxPrice)} coins`
     )
+    .addFields({ name: 'Glossies in inventories', value: glossiesField })
     .setImage(chartUrl)
     .setFooter({ text: `Data: ${lastDate.toUTCString()} | sky.coflnet.com` });
 
