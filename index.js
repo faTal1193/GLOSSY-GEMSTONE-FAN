@@ -12,7 +12,7 @@ const client = new Client({
 const commands = [
   {
     name: 'test',
-    description: 'Responde para verificar que o bot está online',
+    description: 'Responds to check that the bot is online',
   },
 ];
 
@@ -22,9 +22,9 @@ client.once(Events.ClientReady, async (c) => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
-    console.log('Comandos slash registados com sucesso.');
+    console.log('Slash commands registered successfully.');
   } catch (error) {
-    console.error('Erro a registar comandos slash:', error.message);
+    console.error('Error registering slash commands:', error.message);
   }
 });
 
@@ -33,7 +33,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (interaction.commandName === 'test') {
     interaction.reply({
-      content: 'Bot online e a funcionar!',
+      content: 'Bot is online and working!',
       ephemeral: true,
     });
   }
@@ -48,33 +48,61 @@ async function buildElectionEmbed() {
   const data = await res.json();
 
   if (!data.success || !data.mayor) {
-    throw new Error('Dados de eleição indisponíveis');
+    throw new Error('Election data unavailable');
   }
 
   const mayor = data.mayor;
   const election = data.election;
+  const lastUpdated = new Date(data.lastUpdated);
+
+  const totalVotes = election && election.candidates
+    ? election.candidates.reduce((sum, c) => sum + c.votes, 0)
+    : 0;
 
   const embed = new EmbedBuilder()
     .setColor(0x00ff00)
-    .setTitle(`Prefeito atual: ${mayor.name}`)
-    .setDescription('**Perks do prefeito:**\n' + mayor.perks.slice(0, 3).map((p) => `• **${p.name}** - ${stripMc(p.description)}`).join('\n'))
-    .addFields({
-      name: 'Ministro',
-      value: mayor.minister
-        ? `**${mayor.minister.name}** - ${stripMc(mayor.minister.perk.description)}`
-        : 'Sem ministro',
-    });
+    .setTitle(`Current mayor: ${mayor.name}`)
+    .setDescription(
+      `**Mayor perks:**\n` +
+      mayor.perks.map((p) => {
+        const ministerBadge = p.minister ? ' `<-- Minister`' : '';
+        return `• **${p.name}** - ${stripMc(p.description)}${ministerBadge}`;
+      }).join('\n')
+    );
 
-  if (election && election.candidates) {
+  if (mayor.minister) {
     embed.addFields({
-      name: `Candidatos (ano ${election.year})`,
-      value: election.candidates
-        .slice()
-        .sort((a, b) => b.votes - a.votes)
-        .map((c) => `**${c.name}** - ${c.votes.toLocaleString()} votos`)
-        .join('\n'),
+      name: 'Minister',
+      value: `**${mayor.minister.name}** - ${stripMc(mayor.minister.perk.description)}`,
     });
   }
+
+  if (election && election.candidates && election.candidates.length) {
+    const sorted = election.candidates.slice().sort((a, b) => b.votes - a.votes);
+    embed.addFields({
+      name: `Candidates (year ${election.year}) - ${totalVotes.toLocaleString()} total votes`,
+      value: sorted
+        .map((c) => {
+          const pct = totalVotes ? ((c.votes / totalVotes) * 100).toFixed(1) : '0.0';
+          const ministerPerk = c.perks.find((p) => p.minister);
+          const line = `**${c.name}** - ${c.votes.toLocaleString()} votes (${pct}%)`;
+          const perkLine = ministerPerk
+            ? `  ⤷ Minister perk: **${ministerPerk.name}** - ${stripMc(ministerPerk.description).slice(0, 100)}`
+            : '';
+          return perkLine ? `${line}\n${perkLine}` : line;
+        })
+        .join('\n'),
+    });
+  } else if (!election || !election.candidates) {
+    embed.addFields({
+      name: 'Election',
+      value: 'There is no election running right now.',
+    });
+  }
+
+  embed.setFooter({
+    text: `Data updated: ${lastUpdated.toLocaleString()}`,
+  });
 
   return embed;
 }
@@ -91,8 +119,8 @@ client.on(Events.MessageCreate, async (message) => {
       const embed = await buildElectionEmbed();
       return message.reply({ embeds: [embed] });
     } catch (err) {
-      console.error('Erro no comando !election:', err.message);
-      return message.reply('Não consegui obter os dados da eleição agora. Tenta de novo mais tarde.');
+      console.error('Error in !election command:', err.message);
+      return message.reply('Could not fetch election data right now. Try again later.');
     }
   }
 });
