@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { Client, GatewayIntentBits, Events, REST, Routes } = require('discord.js');
 
 const client = new Client({
   intents: [
@@ -9,8 +9,34 @@ const client = new Client({
   ],
 });
 
-client.once(Events.ClientReady, (c) => {
+const commands = [
+  {
+    name: 'test',
+    description: 'Responde para verificar que o bot está online',
+  },
+];
+
+client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
+
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
+    console.log('Comandos slash registados com sucesso.');
+  } catch (error) {
+    console.error('Erro a registar comandos slash:', error.message);
+  }
+});
+
+client.on(Events.InteractionCreate, (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === 'test') {
+    interaction.reply({
+      content: 'Bot online e a funcionar!',
+      ephemeral: true,
+    });
+  }
 });
 
 client.on(Events.MessageCreate, (message) => {
