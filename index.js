@@ -82,12 +82,7 @@ const { EmbedBuilder } = require('discord.js');
 
 const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, '');
 
-function formatCoins(n) {
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
-  return Math.round(n).toString();
-}
+const exactCoins = (n) => Math.round(n).toLocaleString('en-US');
 
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
@@ -290,10 +285,10 @@ async function buildGlossyEmbed() {
     .setColor(0x00d26a)
     .setTitle('Glossy Gemstone - Bazaar Price')
     .setDescription(
-      `**Buy price:** ${formatCoins(last.buy)} coins\n` +
-      `**Sell price:** ${formatCoins(last.sell)} coins\n` +
-      `**7-day change:** ${change >= 0 ? '+' : ''}${formatCoins(change)} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%)\n` +
-      `**Min / Max (7d):** ${formatCoins(minPrice)} / ${formatCoins(maxPrice)} coins`
+      `**Buy price:** ${exactCoins(last.buy)} coins\n` +
+      `**Sell price:** ${exactCoins(last.sell)} coins\n` +
+      `**7-day change:** ${change >= 0 ? '+' : ''}${exactCoins(change)} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%)\n` +
+      `**Min / Max (7d):** ${exactCoins(minPrice)} / ${exactCoins(maxPrice)} coins`
     )
     .addFields({ name: 'Glossies in inventories', value: glossiesField })
     .setImage(chartUrl)
