@@ -18,6 +18,10 @@ const commands = [
     name: 'election',
     description: 'Shows the current SkyBlock election (mayor, minister and candidates)',
   },
+  {
+    name: 'glossy',
+    description: 'Shows Glossy Gemstone bazaar price with a 7-day chart',
+  },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -60,11 +64,111 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.editReply('Could not fetch election data right now. Try again later.');
     }
   }
+
+  if (interaction.commandName === 'glossy') {
+    await interaction.deferReply();
+    try {
+      const embed = await buildGlossyEmbed();
+      await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error in /glossy command:', err.message);
+      await interaction.editReply('Could not fetch Glossy Gemstone price right now. Try again later.');
+    }
+  }
 });
 
 const { EmbedBuilder } = require('discord.js');
 
 const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, '');
+
+function formatCoins(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return Math.round(n).toString();
+}
+
+async function buildGlossyEmbed() {
+  const res = await fetch('https://sky.coflnet.com/api/bazaar/GLOSSY_GEMSTONE/history/week');
+  const history = await res.json();
+
+  if (!Array.isArray(history) || history.length < 2) {
+    throw new Error('No price history available for Glossy Gemstone');
+  }
+
+  const sorted = history.slice().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+  const byDay = new Map();
+  for (const point of sorted) {
+    const day = point.timestamp.slice(0, 10);
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push(point.sell);
+  }
+  const days = [...byDay.entries()].map(([day, prices]) => ({
+    day,
+    price: prices.reduce((sum, p) => sum + p, 0) / prices.length,
+  }));
+
+  const last = sorted[sorted.length - 1];
+  const first = sorted[0];
+  const change = last.sell - first.sell;
+  const changePct = first.sell ? (change / first.sell) * 100 : 0;
+  const prices = days.map((d) => d.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+
+  const labels = days.map((d) =>
+    new Date(d.day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  );
+
+  const chartConfig = {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Sell price',
+          data: prices.map((p) => Math.round(p)),
+          borderColor: '#00d26a',
+          backgroundColor: 'rgba(0,210,106,0.15)',
+          pointRadius: 4,
+          fill: true,
+          tension: 0.2,
+        },
+      ],
+    },
+    options: {
+      legend: { display: false },
+      scales: {
+        y: {
+          ticks: { callback: "function(v){ return (v/1000).toFixed(0) + 'k'; }", color: '#ffffff' },
+          grid: { color: 'rgba(255,255,255,0.08)' },
+        },
+        x: { ticks: { color: '#ffffff' } },
+      },
+    },
+  };
+
+  const chartUrl =
+    'https://quickchart.io/chart?width=500&height=260&backgroundColor=36393f&c=' +
+    encodeURIComponent(JSON.stringify(chartConfig));
+
+  const lastDate = new Date(last.timestamp);
+
+  const embed = new EmbedBuilder()
+    .setColor(0x00d26a)
+    .setTitle('Glossy Gemstone - Bazaar Price')
+    .setDescription(
+      `**Buy price:** ${formatCoins(last.buy)} coins\n` +
+      `**Sell price:** ${formatCoins(last.sell)} coins\n` +
+      `**7-day change:** ${change >= 0 ? '+' : ''}${formatCoins(change)} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%)\n` +
+      `**Min / Max (7d):** ${formatCoins(minPrice)} / ${formatCoins(maxPrice)} coins`
+    )
+    .setImage(chartUrl)
+    .setFooter({ text: `Data: ${lastDate.toUTCString()} | sky.coflnet.com` });
+
+  return embed;
+}
 
 async function buildElectionEmbed() {
   const res = await fetch('https://api.hypixel.net/v2/resources/skyblock/election');
@@ -144,6 +248,16 @@ client.on(Events.MessageCreate, async (message) => {
     } catch (err) {
       console.error('Error in !election command:', err.message);
       return message.reply('Could not fetch election data right now. Try again later.');
+    }
+  }
+
+  if (message.content === '!glossy') {
+    try {
+      const embed = await buildGlossyEmbed();
+      return message.reply({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error in !glossy command:', err.message);
+      return message.reply('Could not fetch Glossy Gemstone price right now. Try again later.');
     }
   }
 });
