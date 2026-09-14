@@ -14,10 +14,6 @@ const commands = [
     name: 'test',
     description: 'Responde para verificar que o bot está online',
   },
-  {
-    name: 'election',
-    description: 'Mostra a eleição atual do SkyBlock (mayor e candidatos)',
-  },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -41,59 +37,63 @@ client.on(Events.InteractionCreate, async (interaction) => {
       ephemeral: true,
     });
   }
-
-  if (interaction.commandName === 'election') {
-    await interaction.deferReply();
-
-    try {
-      const res = await fetch('https://api.hypixel.net/v2/resources/skyblock/election');
-      const data = await res.json();
-
-      if (!data.success || !data.mayor) {
-        return interaction.editReply('Não consegui obter os dados da eleição agora. Tenta de novo mais tarde.');
-      }
-
-      const { EmbedBuilder } = require('discord.js');
-      const mayor = data.mayor;
-      const election = data.election;
-
-      const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, '');
-
-      const embed = new EmbedBuilder()
-        .setColor(0x00ff00)
-        .setTitle(`Prefeito atual: ${mayor.name}`)
-        .setDescription('**Perks do prefeito:**\n' + mayor.perks.slice(0, 3).map((p) => `• **${p.name}** - ${stripMc(p.description)}`).join('\n'))
-        .addFields({
-          name: 'Ministro',
-          value: mayor.minister
-            ? `**${mayor.minister.name}** - ${stripMc(mayor.minister.perk.description)}`
-            : 'Sem ministro',
-        });
-
-      if (election && election.candidates) {
-        embed.addFields({
-          name: `Candidatos (ano ${election.year})`,
-          value: election.candidates
-            .slice()
-            .sort((a, b) => b.votes - a.votes)
-            .map((c) => `**${c.name}** - ${c.votes.toLocaleString()} votos`)
-            .join('\n'),
-        });
-      }
-
-      await interaction.editReply({ embeds: [embed] });
-    } catch (err) {
-      await interaction.editReply('Ocorreu um erro ao consultar a API.');
-      console.error('Erro no comando /election:', err.message);
-    }
-  }
 });
 
-client.on(Events.MessageCreate, (message) => {
+const { EmbedBuilder } = require('discord.js');
+
+const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, '');
+
+async function buildElectionEmbed() {
+  const res = await fetch('https://api.hypixel.net/v2/resources/skyblock/election');
+  const data = await res.json();
+
+  if (!data.success || !data.mayor) {
+    throw new Error('Dados de eleição indisponíveis');
+  }
+
+  const mayor = data.mayor;
+  const election = data.election;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x00ff00)
+    .setTitle(`Prefeito atual: ${mayor.name}`)
+    .setDescription('**Perks do prefeito:**\n' + mayor.perks.slice(0, 3).map((p) => `• **${p.name}** - ${stripMc(p.description)}`).join('\n'))
+    .addFields({
+      name: 'Ministro',
+      value: mayor.minister
+        ? `**${mayor.minister.name}** - ${stripMc(mayor.minister.perk.description)}`
+        : 'Sem ministro',
+    });
+
+  if (election && election.candidates) {
+    embed.addFields({
+      name: `Candidatos (ano ${election.year})`,
+      value: election.candidates
+        .slice()
+        .sort((a, b) => b.votes - a.votes)
+        .map((c) => `**${c.name}** - ${c.votes.toLocaleString()} votos`)
+        .join('\n'),
+    });
+  }
+
+  return embed;
+}
+
+client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
   if (message.content === '!ping') {
-    message.reply('Pong!');
+    return message.reply('Pong!');
+  }
+
+  if (message.content === '!election') {
+    try {
+      const embed = await buildElectionEmbed();
+      return message.reply({ embeds: [embed] });
+    } catch (err) {
+      console.error('Erro no comando !election:', err.message);
+      return message.reply('Não consegui obter os dados da eleição agora. Tenta de novo mais tarde.');
+    }
   }
 });
 
