@@ -154,14 +154,20 @@ async function getPlayerGlossies(name) {
   const json = await res.json();
   if (!json.success || !Array.isArray(json.profiles) || json.profiles.length === 0) return null;
 
+  const TARGET_PROFILE = 'Avocado';
+
   const sorted = json.profiles
     .map((profile) => {
       const member = profile.members && profile.members[uuid] ? profile.members[uuid] : null;
       let firstJoin = member && member.first_join;
       if (!firstJoin && member && member.profile) firstJoin = member.profile.first_join;
-      return { profile, member, firstJoin: firstJoin || Number.MAX_SAFE_INTEGER };
+      const isTarget = (profile.cute_name || '').toLowerCase() === TARGET_PROFILE.toLowerCase();
+      return { profile, member, firstJoin: firstJoin || Number.MAX_SAFE_INTEGER, isTarget };
     })
-    .sort((a, b) => a.firstJoin - b.firstJoin);
+    .sort((a, b) => {
+      if (a.isTarget !== b.isTarget) return a.isTarget ? -1 : 1;
+      return a.firstJoin - b.firstJoin;
+    });
 
   const { profile, member } = sorted[0];
   if (!member) return null;
