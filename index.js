@@ -99,10 +99,17 @@ function timeAgo(ms) {
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
 
+function isGlossyItem(item) {
+  if (!item) return false;
+  if (item.id === GLOSSY_ITEM_ID || item.id === `SKYBLOCK:${GLOSSY_ITEM_ID}`) return true;
+  const ea = item.tag && item.tag.ExtraAttributes;
+  return !!(ea && ea.id === GLOSSY_ITEM_ID);
+}
+
 function countSimpleItems(items) {
   let total = 0;
   for (const item of Array.isArray(items) ? items : []) {
-    if (item && item.id === GLOSSY_ITEM_ID) total += Number(item.Count) || 0;
+    if (isGlossyItem(item)) total += Number(item.Count) || 0;
   }
   return total;
 }
@@ -169,10 +176,11 @@ async function getPlayerGlossies(name) {
       let firstJoin = member && member.first_join;
       if (!firstJoin && member && member.profile) firstJoin = member.profile.first_join;
       const isTarget = (profile.cute_name || '').toLowerCase() === TARGET_PROFILE.toLowerCase();
-      return { profile, member, firstJoin: firstJoin || Number.MAX_SAFE_INTEGER, isTarget };
+      return { profile, member, firstJoin: firstJoin || Number.MAX_SAFE_INTEGER, isTarget, selected: profile.selected };
     })
     .sort((a, b) => {
       if (a.isTarget !== b.isTarget) return a.isTarget ? -1 : 1;
+      if (a.selected !== b.selected) return a.selected ? -1 : 1;
       return a.firstJoin - b.firstJoin;
     });
 
@@ -193,8 +201,6 @@ async function getPlayerGlossies(name) {
     member.storage,
     member.vault,
     profile.vault,
-    member.sacks_containers,
-    profile.sacks_containers,
   ];
 
   for (const container of containers) {
