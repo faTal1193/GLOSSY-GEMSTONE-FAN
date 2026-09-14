@@ -14,6 +14,10 @@ const commands = [
     name: 'test',
     description: 'Responds to check that the bot is online',
   },
+  {
+    name: 'election',
+    description: 'Shows the current SkyBlock election (mayor, minister and candidates)',
+  },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -44,6 +48,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
       content: 'Bot is online and working!',
       ephemeral: true,
     });
+  }
+
+  if (interaction.commandName === 'election') {
+    await interaction.deferReply();
+    try {
+      const embed = await buildElectionEmbed();
+      await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error in /election command:', err.message);
+      await interaction.editReply('Could not fetch election data right now. Try again later.');
+    }
   }
 });
 
