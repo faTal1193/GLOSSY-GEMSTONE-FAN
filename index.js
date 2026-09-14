@@ -21,4 +21,19 @@ client.on(Events.MessageCreate, (message) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+const token = process.env.DISCORD_TOKEN;
+
+if (!token) {
+  console.error('FALHA: variável DISCORD_TOKEN está vazia ou não definida no Railway.');
+  console.error('Configura em Railway > Serviço > Variables > DISCORD_TOKEN = <token do bot>.');
+  process.exit(1);
+} else {
+  console.log(
+    `DISCORD_TOKEN encontrada (início: ${token.slice(0, 4)}..., tamanho: ${token.length})`
+  );
+}
+
+client.login(token).catch((err) => {
+  console.error('Falha no login com o Discord:', err.message);
+  process.exit(1);
+});
