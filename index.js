@@ -21,6 +21,14 @@ client.once(Events.ClientReady, async (c) => {
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
+    const current = await rest.get(Routes.applicationCommands(c.user.id));
+    const stale = current.filter((cmd) => !commands.some((wanted) => wanted.name === cmd.name));
+
+    for (const cmd of stale) {
+      await rest.delete(Routes.applicationCommand(c.user.id, cmd.id));
+      console.log(`Removed stale command: /${cmd.name}`);
+    }
+
     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
     console.log('Slash commands registered successfully.');
   } catch (error) {
