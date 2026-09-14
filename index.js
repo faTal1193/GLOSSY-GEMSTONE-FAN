@@ -92,33 +92,47 @@ function formatCoins(n) {
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
 
-async function countGlossiesInNbt(data) {
-  if (!data) return 0;
+function countSimpleItems(items) {
+  let total = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    if (item && item.id === GLOSSY_ITEM_ID) total += Number(item.Count) || 0;
+  }
+  return total;
+}
+
+async function countNbtBlob(data) {
+  if (!data || typeof data !== 'string') return 0;
   try {
     const buffer = Buffer.from(data, 'base64');
     const { parsed } = await parseNbt(buffer);
     const simple = simplifyNbt(parsed);
-    const items = Array.isArray(simple.i) ? simple.i : [];
-    let total = 0;
-    for (const item of items) {
-      if (item && item.id === GLOSSY_ITEM_ID) total += Number(item.Count) || 0;
-    }
-    return total;
+    return countSimpleItems(simple && simple.i);
   } catch (err) {
     return 0;
   }
 }
 
-async function countContainer(value) {
-  if (typeof value === 'string') return countGlossiesInNbt(value);
+async function countInventory(value) {
+  if (value == null) return 0;
+  if (typeof value === 'string') return countNbtBlob(value);
+  if (typeof value.data === 'string') return countNbtBlob(value.data);
+  if (Array.isArray(value.i)) {
+    return countSimpleItems(value.i);
+  }
   if (Array.isArray(value)) {
     let total = 0;
     for (const entry of value) {
-      total += await countContainer(entry && entry.data);
+      total += await countInventory(entry);
     }
     return total;
   }
-  if (value && typeof value.data === 'string') return countGlossiesInNbt(value.data);
+  if (typeof value === 'object') {
+    let total = 0;
+    for (const child of Object.values(value)) {
+      total += await countInventory(child);
+    }
+    return total;
+  }
   return 0;
 }
 
@@ -143,33 +157,42 @@ async function getPlayerGlossies(name) {
   const sorted = json.profiles
     .map((profile) => {
       const member = profile.members && profile.members[uuid] ? profile.members[uuid] : null;
-      return {
-        profile,
-        member,
-        firstJoin: member && member.first_join ? member.first_join : Number.MAX_SAFE_INTEGER,
-      };
+      let firstJoin = member && member.first_join;
+      if (!firstJoin && member && member.profile) firstJoin = member.profile.first_join;
+      return { profile, member, firstJoin: firstJoin || Number.MAX_SAFE_INTEGER };
     })
     .sort((a, b) => a.firstJoin - b.firstJoin);
 
   const { profile, member } = sorted[0];
   if (!member) return null;
 
-  const candidates = [
-    member.inv_contents,
-    member.armor,
-    member.ender_chest_contents,
+  let total = 0;
+
+  const inv = member.inventory || {};
+  const containers = [
+    inv.inv_contents !== undefined ? inv.inv_contents : member.inv_contents,
+    inv.inv_armor !== undefined ? inv.inv_armor : member.inv_armor,
+    inv.ender_chest_contents !== undefined ? inv.ender_chest_contents : member.ender_chest_contents,
+    inv.backpack_contents !== undefined ? inv.backpack_contents : member.backpack_contents,
+    inv.wardrobe_contents !== undefined ? inv.wardrobe_contents : member.wardrobe_contents,
+    inv.equipment_contents !== undefined ? inv.equipment_contents : member.equipment_contents,
+    inv.bag_contents,
     member.storage,
-    member.backpack_contents,
-    member.wardrobe_contents,
-    member.equipment_contents,
+    member.vault,
     profile.vault,
+    member.sacks_containers,
     profile.sacks_containers,
   ];
 
-  let total = 0;
-  for (const candidate of candidates) {
-    total += await countContainer(candidate);
+  for (const container of containers) {
+    total += await countInventory(container);
   }
+
+  const sacksCounts =
+    (member.sacks_counts && member.sacks_counts[GLOSSY_ITEM_ID]) ||
+    (inv.sacks_counts && inv.sacks_counts[GLOSSY_ITEM_ID]) ||
+    0;
+  total += Number(sacksCounts) || 0;
 
   return { count: total, profileName: profile.cute_name || 'Unknown' };
 }
