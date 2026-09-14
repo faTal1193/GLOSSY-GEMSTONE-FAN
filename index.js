@@ -293,7 +293,7 @@ async function buildGlossyEmbed() {
         const name = GLOSSY_PLAYERS[index];
         if (result.status === 'fulfilled' && result.value !== null) {
           const saved = result.value.lastSave ? ` · save ${timeAgo(result.value.lastSave)}` : '';
-          return `• **${name}** — ${result.value.count} (${result.value.profileName}${saved})`;
+          return `• **${name}** — ||${result.value.count}|| (${result.value.profileName}${saved})`;
         }
         return `• **${name}** — N/A (API desligada)`;
       })
