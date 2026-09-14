@@ -84,6 +84,18 @@ const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, 
 
 const exactCoins = (n) => Math.round(n).toLocaleString('en-US');
 
+function timeAgo(ms) {
+  if (!ms) return '';
+  const diff = Math.max(0, Date.now() - ms);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return 'agora mesmo';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `${hours} h`;
+  return `${Math.floor(hours / 24)} d`;
+}
+
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
 
@@ -195,7 +207,7 @@ async function getPlayerGlossies(name) {
     0;
   total += Number(sacksCounts) || 0;
 
-  return { count: total, profileName: profile.cute_name || 'Unknown' };
+  return { count: total, profileName: profile.cute_name || 'Unknown', lastSave: member.last_save || null };
 }
 
 async function buildGlossyEmbed() {
@@ -274,7 +286,8 @@ async function buildGlossyEmbed() {
       .map((result, index) => {
         const name = GLOSSY_PLAYERS[index];
         if (result.status === 'fulfilled' && result.value !== null) {
-          return `• **${name}** — ${result.value.count} (${result.value.profileName})`;
+          const saved = result.value.lastSave ? ` · save ${timeAgo(result.value.lastSave)}` : '';
+          return `• **${name}** — ${result.value.count} (${result.value.profileName}${saved})`;
         }
         return `• **${name}** — N/A (API desligada)`;
       })
