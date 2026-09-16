@@ -336,39 +336,43 @@ async function buildElectionEmbed() {
     .setColor(0x00ff00)
     .setTitle(`Current mayor: ${mayor.name}`)
     .setDescription(
-      `**Mayor perks:**\n` +
+      `**Mayor perks**\n` +
       mayor.perks.map((p) => {
-        const ministerBadge = p.minister ? ' `<-- Minister`' : '';
+        const ministerBadge = p.minister ? ' `(Minister)`' : '';
         return `• **${p.name}** - ${stripMc(p.description)}${ministerBadge}`;
       }).join('\n')
     );
 
   if (mayor.minister) {
     embed.addFields({
-      name: 'Minister',
-      value: `**${mayor.minister.name}** - ${stripMc(mayor.minister.perk.description)}`,
+      name: '**Minister**',
+      value: `• **${mayor.minister.name}** - ${stripMc(mayor.minister.perk.description)}`,
     });
   }
+
+  embed.addFields({ name: '\u200b', value: '\u2501'.repeat(22) });
 
   if (election && election.candidates && election.candidates.length) {
     const sorted = election.candidates.slice().sort((a, b) => b.votes - a.votes);
     embed.addFields({
-      name: `Candidates (year ${election.year}) - ${totalVotes.toLocaleString()} total votes`,
-      value: sorted
-        .map((c) => {
-          const pct = totalVotes ? ((c.votes / totalVotes) * 100).toFixed(1) : '0.0';
-          const ministerPerk = c.perks.find((p) => p.minister);
-          const line = `**${c.name}** - ${c.votes.toLocaleString()} votes (${pct}%)`;
-          const perkLine = ministerPerk
-            ? `  ⤷ Minister perk: **${ministerPerk.name}** - ${stripMc(ministerPerk.description).slice(0, 100)}`
-            : '';
-          return perkLine ? `${line}\n${perkLine}` : line;
-        })
-        .join('\n'),
+      name: `**Ongoing Election — Year ${election.year}**`,
+      value:
+        `**${totalVotes.toLocaleString()} total votes**\n` +
+        sorted
+          .map((c) => {
+            const pct = totalVotes ? ((c.votes / totalVotes) * 100).toFixed(1) : '0.0';
+            const ministerPerk = c.perks.find((p) => p.minister);
+            const line = `• **${c.name}** - ${c.votes.toLocaleString()} votes (${pct}%)`;
+            const perkLine = ministerPerk
+              ? `    ⤷ Minister perk: **${ministerPerk.name}** - ${stripMc(ministerPerk.description).slice(0, 100)}`
+              : '';
+            return perkLine ? `${line}\n${perkLine}` : line;
+          })
+          .join('\n'),
     });
-  } else if (!election || !election.candidates) {
+  } else {
     embed.addFields({
-      name: 'Election',
+      name: '**Election**',
       value: 'There is no election running right now.',
     });
   }
