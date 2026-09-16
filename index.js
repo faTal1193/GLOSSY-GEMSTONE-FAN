@@ -325,7 +325,7 @@ async function buildElectionEmbed() {
   }
 
   const mayor = data.mayor;
-  const election = data.election;
+  const election = data.current || data.election;
   const lastUpdated = new Date(data.lastUpdated);
 
   const totalVotes = election && election.candidates
