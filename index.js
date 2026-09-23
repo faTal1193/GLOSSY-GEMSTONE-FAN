@@ -23,6 +23,10 @@ const commands = [
     name: 'glossy',
     description: 'Shows Glossy Gemstone bazaar price with a 7-day chart',
   },
+  {
+    name: 'chalice',
+    description: 'Shows Avaricious Chalice bazaar price with a 7-day chart',
+  },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -74,6 +78,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } catch (err) {
       console.error('Error in /glossy command:', err.message);
       await interaction.editReply('Could not fetch Glossy Gemstone price right now. Try again later.');
+    }
+  }
+
+  if (interaction.commandName === 'chalice') {
+    await interaction.deferReply();
+    try {
+      const embed = await buildChaliceEmbed();
+      await interaction.editReply({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error in /chalice command:', err.message);
+      await interaction.editReply('Could not fetch Avaricious Chalice price right now. Try again later.');
     }
   }
 });
@@ -352,12 +367,12 @@ async function verifyHypixelKey() {
   }
 }
 
-async function buildGlossyEmbed() {
-  const res = await fetch('https://sky.coflnet.com/api/bazaar/GLOSSY_GEMSTONE/history/week');
+async function fetchBazaarData(itemId) {
+  const res = await fetch(`https://sky.coflnet.com/api/bazaar/${itemId}/history/week`);
   const history = await res.json();
 
   if (!Array.isArray(history) || history.length < 2) {
-    throw new Error('No price history available for Glossy Gemstone');
+    throw new Error(`No price history available for ${itemId}`);
   }
 
   const sorted = history.slice().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -378,14 +393,28 @@ async function buildGlossyEmbed() {
   const change = last.sell - first.sell;
   const changePct = first.sell ? (change / first.sell) * 100 : 0;
   const prices = days.map((d) => d.price);
-  const minPrice = Math.min(...prices);
-  const maxPrice = Math.max(...prices);
 
   const labels = days.map((d) =>
     new Date(d.day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
   );
 
-  const chartConfig = {
+  const chartUrl = buildBazaarChart(itemId, labels, prices);
+
+  return {
+    last,
+    first,
+    change,
+    changePct,
+    prices,
+    minPrice: Math.min(...prices),
+    maxPrice: Math.max(...prices),
+    lastDate: new Date(last.timestamp),
+    chartUrl,
+  };
+}
+
+function buildBazaarChart(itemId, labels, prices, color = '#00d26a') {
+  const config = {
     type: 'line',
     data: {
       labels,
@@ -393,8 +422,8 @@ async function buildGlossyEmbed() {
         {
           label: 'Sell price',
           data: prices.map((p) => Math.round(p)),
-          borderColor: '#00d26a',
-          backgroundColor: 'rgba(0,210,106,0.15)',
+          borderColor: color,
+          backgroundColor: color + '26',
           pointRadius: 4,
           fill: true,
           tension: 0.2,
@@ -405,7 +434,11 @@ async function buildGlossyEmbed() {
       legend: { display: false },
       scales: {
         y: {
-          ticks: { callback: "function(v){ return (v/1000).toFixed(0) + 'k'; }", color: '#ffffff' },
+          ticks: {
+            callback:
+              "function(v){ if (v >= 1000000) { var m = v/1000000; return m.toFixed(m < 10 ? 1 : 0) + 'M'; } if (v >= 1000) { var k = v/1000; return k.toFixed(k < 10 ? 1 : 0) + 'k'; } return v; }",
+            color: '#ffffff',
+          },
           grid: { color: 'rgba(255,255,255,0.08)' },
         },
         x: { ticks: { color: '#ffffff' } },
@@ -413,11 +446,14 @@ async function buildGlossyEmbed() {
     },
   };
 
-  const chartUrl =
+  return (
     'https://quickchart.io/chart?width=500&height=260&backgroundColor=36393f&c=' +
-    encodeURIComponent(JSON.stringify(chartConfig));
+    encodeURIComponent(JSON.stringify(config))
+  );
+}
 
-  const lastDate = new Date(last.timestamp);
+async function buildGlossyEmbed() {
+  const data = await fetchBazaarData('GLOSSY_GEMSTONE');
 
   let glossiesField;
   if (!process.env.HYPIXEL_API_KEY) {
@@ -443,16 +479,32 @@ async function buildGlossyEmbed() {
     .setColor(0x00d26a)
     .setTitle('Glossy Gemstone - Bazaar Price')
     .setDescription(
-      `**Buy price:** ${exactCoins(last.buy)} coins\n` +
-      `**Sell price:** ${exactCoins(last.sell)} coins\n` +
-      `**7-day change:** ${change >= 0 ? '+' : ''}${exactCoins(change)} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%)\n` +
-      `**Min / Max (7d):** ${exactCoins(minPrice)} / ${exactCoins(maxPrice)} coins`
+      `**Buy price:** ${exactCoins(data.last.buy)} coins\n` +
+      `**Sell price:** ${exactCoins(data.last.sell)} coins\n` +
+      `**7-day change:** ${data.change >= 0 ? '+' : ''}${exactCoins(data.change)} (${data.changePct >= 0 ? '+' : ''}${data.changePct.toFixed(1)}%)\n` +
+      `**Min / Max (7d):** ${exactCoins(data.minPrice)} / ${exactCoins(data.maxPrice)} coins`
     )
     .addFields({ name: 'Glossies in inventories', value: glossiesField })
-    .setImage(chartUrl)
-    .setFooter({ text: `Data: ${lastDate.toUTCString()} | sky.coflnet.com | build ${DEPLOY_LABEL}` });
+    .setImage(data.chartUrl)
+    .setFooter({ text: `Data: ${data.lastDate.toUTCString()} | sky.coflnet.com | build ${DEPLOY_LABEL}` });
 
   return embed;
+}
+
+async function buildChaliceEmbed() {
+  const data = await fetchBazaarData('AVARICIOUS_CHALICE');
+
+  return new EmbedBuilder()
+    .setColor(0xffb020)
+    .setTitle('Avaricious Chalice - Bazaar Price')
+    .setDescription(
+      `**Buy price:** ${exactCoins(data.last.buy)} coins\n` +
+      `**Sell price:** ${exactCoins(data.last.sell)} coins\n` +
+      `**7-day change:** ${data.change >= 0 ? '+' : ''}${exactCoins(data.change)} (${data.changePct >= 0 ? '+' : ''}${data.changePct.toFixed(1)}%)\n` +
+      `**Min / Max (7d):** ${exactCoins(data.minPrice)} / ${exactCoins(data.maxPrice)} coins`
+    )
+    .setImage(data.chartUrl)
+    .setFooter({ text: `Data: ${data.lastDate.toUTCString()} | sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
 
 async function buildElectionEmbed() {
@@ -555,6 +607,16 @@ client.on(Events.MessageCreate, async (message) => {
     } catch (err) {
       console.error('Error in !glossy command:', err.message);
       return message.reply('Could not fetch Glossy Gemstone price right now. Try again later.');
+    }
+  }
+
+  if (message.content === '!chalice') {
+    try {
+      const embed = await buildChaliceEmbed();
+      return message.reply({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error in !chalice command:', err.message);
+      return message.reply('Could not fetch Avaricious Chalice price right now. Try again later.');
     }
   }
 });
