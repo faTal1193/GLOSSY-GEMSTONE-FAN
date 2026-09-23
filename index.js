@@ -98,6 +98,7 @@ function timeAgo(ms) {
 
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
+const DEPLOY_LABEL = 'v2-diagnostics';
 
 function isGlossyItem(item) {
   if (!item) return false;
@@ -205,32 +206,36 @@ async function getPlayerGlossies(name) {
   const res = await fetch(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid.id}`, {
     headers: { 'API-Key': process.env.HYPIXEL_API_KEY },
   });
-  const json = await res.json().catch(() => null);
+  const rawBody = await res.text();
+  const json = (() => {
+    try {
+      return JSON.parse(rawBody);
+    } catch {
+      return null;
+    }
+  })();
+  const profilesCount = json && Array.isArray(json.profiles) ? json.profiles.length : 'n/a';
+  const summary = `[${name}] Hypixel -> HTTP ${res.status}, success=${json && json.success}, profiles=${profilesCount}`;
+  if (!json || !res.ok || json.success === false || profilesCount === 0) {
+    console.error(`${summary} | body: ${rawBody.slice(0, 600)}`);
+  } else {
+    console.log(summary);
+  }
+
+  if (!json) return { count: 0, reason: `resposta inválida (HTTP ${res.status})` };
+
+  const hypixelCause = (json.cause || json.reason || '').trim();
 
   if (!res.ok) {
-    const cause = (json && (json.cause || json.reason)) || `HTTP ${res.status}`;
-    let reason;
-    if (res.status === 403) {
-      reason = 'chave inválida';
-      console.error(`[${name}] Hypixel rejeitou a API key (403): ${cause}`);
-    } else if (res.status === 429) {
-      reason = 'rate limit da Hypixel';
-      console.error(`[${name}] Hypixel em rate limit (429): ${cause}`);
-    } else {
-      reason = `falha da Hypixel (HTTP ${res.status})`;
-      console.error(`[${name}] Hypixel HTTP ${res.status}: ${cause}`);
-    }
-    return { count: 0, reason };
+    const tag = res.status === 403 ? 'chave inválida' : res.status === 429 ? 'rate limit da Hypixel' : `HTTP ${res.status}`;
+    return { count: 0, reason: hypixelCause ? `${tag}: ${hypixelCause}` : tag };
   }
 
-  if (!json) return { count: 0, reason: 'resposta vazia da Hypixel' };
   if (json.success === false) {
-    const cause = json.cause || 'API do jogador desligada';
-    console.error(`[${name}] Hypixel devolveu success:false — ${cause}`);
-    return { count: 0, reason: cause };
+    return { count: 0, reason: hypixelCause || 'API do jogador desligada' };
   }
-  if (!Array.isArray(json.profiles) || json.profiles.length === 0) {
-    return { count: 0, reason: 'sem perfis SkyBlock' };
+  if (profilesCount === 0) {
+    return { count: 0, reason: 'sem perfis SkyBlock (API desligada?)' };
   }
 
   const TARGET_PROFILE = 'Avocado';
@@ -396,7 +401,7 @@ async function buildGlossyEmbed() {
     )
     .addFields({ name: 'Glossies in inventories', value: glossiesField })
     .setImage(chartUrl)
-    .setFooter({ text: `Data: ${lastDate.toUTCString()} | sky.coflnet.com` });
+    .setFooter({ text: `Data: ${lastDate.toUTCString()} | sky.coflnet.com | build ${DEPLOY_LABEL}` });
 
   return embed;
 }
