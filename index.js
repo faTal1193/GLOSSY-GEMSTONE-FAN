@@ -55,8 +55,8 @@ const commands = [
             type: 3,
             required: true,
             choices: [
-              { name: 'Baixo (preço desce)', value: 'baixo' },
-              { name: 'Cima (preço sobe)', value: 'cima' },
+              { name: 'Baixo', value: 'baixo' },
+              { name: 'Cima', value: 'cima' },
             ],
           },
           {
@@ -706,7 +706,7 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 const ALERT_POLL_MS = 5 * 60 * 1000;
-const ALERTS_PATH = path.join(__dirname, 'alerts.json');
+const ALERTS_PATH = process.env.ALERTS_FILE || path.join(__dirname, 'alerts.json');
 const ALERT_ITEMS = {
   GLOSSY_GEMSTONE: 'Glossy Gemstone',
   AVARICIOUS_CHALICE: 'Avaricious Chalice',
@@ -734,6 +734,7 @@ function loadAlerts() {
 
 function saveAlerts() {
   try {
+    fs.mkdirSync(path.dirname(ALERTS_PATH), { recursive: true });
     fs.writeFileSync(ALERTS_PATH, JSON.stringify({ alerts }, null, 2));
   } catch (err) {
     console.error('Could not save alerts.json:', err.message);
