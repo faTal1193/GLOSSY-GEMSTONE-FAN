@@ -495,7 +495,7 @@ async function buildChaliceEmbed() {
   const data = await fetchBazaarData('AVARICIOUS_CHALICE');
 
   return new EmbedBuilder()
-    .setColor(0xffb020)
+    .setColor(0xaa00aa)
     .setTitle('Avaricious Chalice - Bazaar Price')
     .setDescription(
       `**Buy price:** ${exactCoins(data.last.buy)} coins\n` +
