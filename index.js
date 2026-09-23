@@ -96,6 +96,37 @@ function timeAgo(ms) {
   return `${Math.floor(hours / 24)} d`;
 }
 
+const SKYBLOCK_EPOCH_MS = 1560275700000;
+const SKYBLOCK_DAY_MS = 20 * 60 * 1000;
+const SKYBLOCK_YEAR_MS = 372 * SKYBLOCK_DAY_MS;
+const ELECTION_END_OFFSET_DAYS = 88;
+
+function skyblockElectionEndMs(year) {
+  return SKYBLOCK_EPOCH_MS + year * SKYBLOCK_YEAR_MS + ELECTION_END_OFFSET_DAYS * SKYBLOCK_DAY_MS;
+}
+
+function formatCountdown(ms) {
+  if (ms <= 0) return 'acabou';
+  const totalMin = Math.ceil(ms / 60000);
+  const days = Math.floor(totalMin / 1440);
+  const hours = Math.floor((totalMin % 1440) / 60);
+  const minutes = totalMin % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function formatLisbonTime(date) {
+  return new Intl.DateTimeFormat('pt-PT', {
+    timeZone: 'Europe/Lisbon',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
 const DEPLOY_LABEL = 'v2-diagnostics';
@@ -444,10 +475,20 @@ async function buildElectionEmbed() {
 
   if (election && election.candidates && election.candidates.length) {
     const sorted = election.candidates.slice().sort((a, b) => b.votes - a.votes);
+
+    const endMs = skyblockElectionEndMs(election.year);
+    const remainingMs = endMs - lastUpdated.getTime();
+    const countdownLine =
+      remainingMs > 0
+        ? `\n**Termina em:** ${formatLisbonTime(new Date(endMs))} (hora de Portugal)\n**Falta:** ${formatCountdown(remainingMs)}`
+        : '';
+
     embed.addFields({
       name: `**Ongoing Election — Year ${election.year}**`,
       value:
-        `**${totalVotes.toLocaleString()} total votes**\n` +
+        `**${totalVotes.toLocaleString()} total votes**` +
+        (countdownLine ? `\n${countdownLine}` : '') +
+        '\n' +
         sorted
           .map((c) => {
             const pct = totalVotes ? ((c.votes / totalVotes) * 100).toFixed(1) : '0.0';
