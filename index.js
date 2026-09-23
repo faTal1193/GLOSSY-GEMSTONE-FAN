@@ -150,29 +150,94 @@ async function countInventory(value) {
   return 0;
 }
 
-async function getPlayerGlossies(name) {
-  if (!process.env.HYPIXEL_API_KEY) return null;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const uuidCache = new Map();
+let nextAllowedMojangCall = 0;
+
+async function getUuid(name) {
+  const lower = name.toLowerCase();
+  const cached = uuidCache.get(lower);
+  if (cached) return { ok: true, id: cached };
+
+  const waitMs = Math.max(0, nextAllowedMojangCall - Date.now());
+  if (waitMs > 0) await sleep(waitMs);
+  nextAllowedMojangCall = Date.now() + 500;
 
   const mojangRes = await fetch(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(name)}`, {
     headers: { 'User-Agent': 'GlossyGemstoneBot/1.0' },
   });
-  if (!mojangRes.ok) return null;
-  const mojang = await mojangRes.json();
-  const uuid = mojang && mojang.id;
-  if (!uuid) return null;
 
-  const res = await fetch(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid}`, {
+  if (mojangRes.status === 204 || mojangRes.status === 404) {
+    return { ok: false, notFound: true, status: mojangRes.status };
+  }
+  if (mojangRes.status === 429) {
+    const retryAfter = Number(mojangRes.headers.get('retry-after')) || 10;
+    nextAllowedMojangCall = Date.now() + retryAfter * 1000;
+    return { ok: false, notFound: false, status: 429 };
+  }
+  if (!mojangRes.ok) {
+    return { ok: false, notFound: false, status: mojangRes.status };
+  }
+
+  const mojang = await mojangRes.json().catch(() => null);
+  if (!mojang || !mojang.id) return { ok: false, notFound: true, status: 204 };
+  uuidCache.set(lower, mojang.id);
+  return { ok: true, id: mojang.id };
+}
+
+async function getPlayerGlossies(name) {
+  if (!process.env.HYPIXEL_API_KEY) {
+    return { count: 0, reason: 'HYPIXEL_API_KEY não definida' };
+  }
+
+  const uuid = await getUuid(name);
+  if (!uuid.ok) {
+    const reason = uuid.notFound
+      ? 'jogador desconhecido'
+      : uuid.status === 429
+        ? 'rate limit da Mojang'
+        : `falha da Mojang (HTTP ${uuid.status})`;
+    console.error(`[${name}] Não foi possível obter UUID: ${reason}`);
+    return { count: 0, reason };
+  }
+
+  const res = await fetch(`https://api.hypixel.net/v2/skyblock/profiles?uuid=${uuid.id}`, {
     headers: { 'API-Key': process.env.HYPIXEL_API_KEY },
   });
-  if (!res.ok) return null;
-  const json = await res.json();
-  if (!json.success || !Array.isArray(json.profiles) || json.profiles.length === 0) return null;
+  const json = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    const cause = (json && (json.cause || json.reason)) || `HTTP ${res.status}`;
+    let reason;
+    if (res.status === 403) {
+      reason = 'chave inválida';
+      console.error(`[${name}] Hypixel rejeitou a API key (403): ${cause}`);
+    } else if (res.status === 429) {
+      reason = 'rate limit da Hypixel';
+      console.error(`[${name}] Hypixel em rate limit (429): ${cause}`);
+    } else {
+      reason = `falha da Hypixel (HTTP ${res.status})`;
+      console.error(`[${name}] Hypixel HTTP ${res.status}: ${cause}`);
+    }
+    return { count: 0, reason };
+  }
+
+  if (!json) return { count: 0, reason: 'resposta vazia da Hypixel' };
+  if (json.success === false) {
+    const cause = json.cause || 'API do jogador desligada';
+    console.error(`[${name}] Hypixel devolveu success:false — ${cause}`);
+    return { count: 0, reason: cause };
+  }
+  if (!Array.isArray(json.profiles) || json.profiles.length === 0) {
+    return { count: 0, reason: 'sem perfis SkyBlock' };
+  }
 
   const TARGET_PROFILE = 'Avocado';
 
   const sorted = json.profiles
     .map((profile) => {
-      const member = profile.members && profile.members[uuid] ? profile.members[uuid] : null;
+      const member = profile.members && profile.members[uuid.id] ? profile.members[uuid.id] : null;
       let firstJoin = member && member.first_join;
       if (!firstJoin && member && member.profile) firstJoin = member.profile.first_join;
       const isTarget = (profile.cute_name || '').toLowerCase() === TARGET_PROFILE.toLowerCase();
@@ -185,7 +250,7 @@ async function getPlayerGlossies(name) {
     });
 
   const { profile, member } = sorted[0];
-  if (!member) return null;
+  if (!member) return { count: 0, reason: 'membro não encontrado no perfil' };
 
   let total = 0;
 
@@ -214,6 +279,23 @@ async function getPlayerGlossies(name) {
   total += Number(sacksCounts) || 0;
 
   return { count: total, profileName: profile.cute_name || 'Unknown', lastSave: member.last_save || null };
+}
+
+async function verifyHypixelKey() {
+  try {
+    const res = await fetch('https://api.hypixel.net/v2/key', {
+      headers: { 'API-Key': process.env.HYPIXEL_API_KEY },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body.success) {
+      const owner = (body.record && body.record.owner) || '?';
+      console.log(`Hypixel API key válida (owner: ${owner}).`);
+    } else {
+      console.error(`Hypixel API key INVÁLIDA — status ${res.status}: ${body.cause || JSON.stringify(body)}`);
+    }
+  } catch (err) {
+    console.error('Não foi possível validar a Hypixel API key:', err.message);
+  }
 }
 
 async function buildGlossyEmbed() {
@@ -287,15 +369,18 @@ async function buildGlossyEmbed() {
   if (!process.env.HYPIXEL_API_KEY) {
     glossiesField = 'Add **HYPIXEL_API_KEY** on Railway to enable this.';
   } else {
-    const results = await Promise.allSettled(GLOSSY_PLAYERS.map((player) => getPlayerGlossies(player)));
+    const results = [];
+    for (const player of GLOSSY_PLAYERS) {
+      results.push(await getPlayerGlossies(player));
+    }
     glossiesField = results
       .map((result, index) => {
         const name = GLOSSY_PLAYERS[index];
-        if (result.status === 'fulfilled' && result.value !== null) {
-          const saved = result.value.lastSave ? ` · save ${timeAgo(result.value.lastSave)}` : '';
-          return `• **${name}** — ||${String(result.value.count).padStart(5, '0')}|| (${result.value.profileName}${saved})`;
+        if (result.reason) {
+          return `• **${name}** — N/A (${result.reason})`;
         }
-        return `• **${name}** — N/A (API desligada)`;
+        const saved = result.lastSave ? ` · save ${timeAgo(result.lastSave)}` : '';
+        return `• **${name}** — ||${String(result.count).padStart(5, '0')}|| (${result.profileName}${saved})`;
       })
       .join('\n');
   }
@@ -421,6 +506,14 @@ if (!token) {
 } else {
   console.log(
     `DISCORD_TOKEN encontrada (início: ${token.slice(0, 4)}..., tamanho: ${token.length})`
+  );
+}
+
+if (process.env.HYPIXEL_API_KEY) {
+  verifyHypixelKey();
+} else {
+  console.warn(
+    'Aviso: HYPIXEL_API_KEY não está definida — as contagens de jogadores no /glossy ficarão indisponíveis.'
   );
 }
 
