@@ -127,6 +127,24 @@ function formatLisbonTime(date) {
   }).format(date);
 }
 
+function addChunkedFields(embed, name, lines, maxChars = 1000) {
+  let chunk = [];
+  let chunkLen = 0;
+  for (const line of lines) {
+    const addLen = line.length + 1;
+    if (chunk.length && chunkLen + addLen > maxChars) {
+      embed.addFields({ name, value: chunk.join('\n') });
+      chunk = [];
+      chunkLen = 0;
+    }
+    chunk.push(line);
+    chunkLen += addLen;
+  }
+  if (chunk.length) {
+    embed.addFields({ name, value: chunk.join('\n') });
+  }
+}
+
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
 const DEPLOY_LABEL = 'v2-diagnostics';
@@ -487,20 +505,18 @@ async function buildElectionEmbed() {
       name: `**Ongoing Election — Year ${election.year}**`,
       value:
         `**${totalVotes.toLocaleString()} total votes**` +
-        (countdownLine ? `\n${countdownLine}` : '') +
-        '\n' +
-        sorted
-          .map((c) => {
-            const pct = totalVotes ? ((c.votes / totalVotes) * 100).toFixed(1) : '0.0';
-            const ministerPerk = c.perks.find((p) => p.minister);
-            const line = `• **${c.name}** - ${c.votes.toLocaleString()} votes (${pct}%)`;
-            const perkLine = ministerPerk
-              ? `    ⤷ Minister perk: **${ministerPerk.name}** - ${stripMc(ministerPerk.description).slice(0, 100)}`
-              : '';
-            return perkLine ? `${line}\n${perkLine}` : line;
-          })
-          .join('\n'),
+        (countdownLine ? `\n${countdownLine}` : ''),
     });
+
+    const candidateLines = sorted.map((c) => {
+      const pct = totalVotes ? ((c.votes / totalVotes) * 100).toFixed(1) : '0.0';
+      const ministerPerk = c.perks.find((p) => p.minister);
+      const line = `• **${c.name}** - ${c.votes.toLocaleString()} votes (${pct}%)`;
+      if (!ministerPerk) return line;
+      return `${line}\n    ⤷ Minister perk: **${ministerPerk.name}** - ${stripMc(ministerPerk.description)}`;
+    });
+
+    addChunkedFields(embed, '**Candidates**', candidateLines);
   } else {
     embed.addFields({
       name: '**Election**',
