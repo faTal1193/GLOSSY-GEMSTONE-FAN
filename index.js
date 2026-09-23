@@ -1,4 +1,6 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const { Client, GatewayIntentBits, Events, REST, Routes } = require('discord.js');
 const { parse: parseNbt, simplify: simplifyNbt } = require('prismarine-nbt');
 
@@ -27,6 +29,70 @@ const commands = [
     name: 'chalice',
     description: 'Shows Avaricious Chalice bazaar price with a 7-day chart',
   },
+  {
+    name: 'alert',
+    description: 'Price alerts for Glossy Gemstone / Avaricious Chalice',
+    options: [
+      {
+        name: 'add',
+        description: 'Create a price alert',
+        type: 1,
+        options: [
+          {
+            name: 'item',
+            description: 'Item to track',
+            type: 3,
+            required: true,
+            choices: [
+              { name: 'Glossy Gemstone', value: 'GLOSSY_GEMSTONE' },
+              { name: 'Avaricious Chalice', value: 'AVARICIOUS_CHALICE' },
+            ],
+          },
+          { name: 'threshold', description: 'Target price in coins', type: 4, required: true },
+          {
+            name: 'direction',
+            description: 'below: price drops under / above: price goes over the threshold',
+            type: 3,
+            required: true,
+            choices: [
+              { name: 'below (abaixo de)', value: 'below' },
+              { name: 'above (acima de)', value: 'above' },
+            ],
+          },
+          {
+            name: 'price',
+            description: 'Bazaar price to watch (default: sell)',
+            type: 3,
+            required: false,
+            choices: [
+              { name: 'sell', value: 'sell' },
+              { name: 'buy', value: 'buy' },
+            ],
+          },
+          {
+            name: 'channel',
+            description: 'Channel for the alert (default: current channel)',
+            type: 7,
+            required: false,
+            channel_types: [0, 5],
+          },
+        ],
+      },
+      { name: 'list', description: 'Show all price alerts', type: 1 },
+      {
+        name: 'remove',
+        description: 'Remove a price alert',
+        type: 1,
+        options: [{ name: 'id', description: 'Alert id (see /alert list)', type: 3, required: true }],
+      },
+      {
+        name: 'reset',
+        description: 'Re-arm a disabled price alert',
+        type: 1,
+        options: [{ name: 'id', description: 'Alert id (see /alert list)', type: 3, required: true }],
+      },
+    ],
+  },
 ];
 
 client.once(Events.ClientReady, async (c) => {
@@ -47,9 +113,23 @@ client.once(Events.ClientReady, async (c) => {
   } catch (error) {
     console.error('Error registering slash commands:', error.message);
   }
+
+  loadAlerts();
+  if (alerts.length) console.log(`Price alerts loaded: ${alerts.length}`);
+  setInterval(() => {
+    if (pollingInFlight) return;
+    pollingInFlight = true;
+    alertPollTick().finally(() => {
+      pollingInFlight = false;
+    });
+  }, ALERT_POLL_MS);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isButton()) {
+    return handleAlertButton(interaction);
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'test') {
@@ -91,9 +171,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.editReply('Could not fetch Avaricious Chalice price right now. Try again later.');
     }
   }
+
+  if (interaction.commandName === 'alert') {
+    await handleAlertCommand(interaction);
+  }
 });
 
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, '');
 
@@ -620,6 +704,272 @@ client.on(Events.MessageCreate, async (message) => {
     }
   }
 });
+
+const ALERT_POLL_MS = 5 * 60 * 1000;
+const ALERTS_PATH = path.join(__dirname, 'alerts.json');
+const ALERT_ITEMS = {
+  GLOSSY_GEMSTONE: 'Glossy Gemstone',
+  AVARICIOUS_CHALICE: 'Avaricious Chalice',
+};
+
+let alerts = [];
+let pollingInFlight = false;
+
+function loadAlerts() {
+  try {
+    if (fs.existsSync(ALERTS_PATH)) {
+      const parsed = JSON.parse(fs.readFileSync(ALERTS_PATH, 'utf8'));
+      alerts = Array.isArray(parsed) ? parsed : Array.isArray(parsed.alerts) ? parsed.alerts : [];
+    }
+  } catch (err) {
+    console.error('Could not load alerts.json:', err.message);
+    alerts = [];
+  }
+  return alerts;
+}
+
+function saveAlerts() {
+  try {
+    fs.writeFileSync(ALERTS_PATH, JSON.stringify({ alerts }, null, 2));
+  } catch (err) {
+    console.error('Could not save alerts.json:', err.message);
+  }
+}
+
+const genAlertId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+const alertStateLabel = (state) =>
+  state === 'armed' ? 'armado' : state === 'fired' ? 'aguarda preço seguro' : 'desligado';
+
+function alertItemColor(itemId) {
+  return itemId === 'GLOSSY_GEMSTONE' ? 0x00d26a : 0xaa00aa;
+}
+
+async function fetchBazaarPrices() {
+  if (!process.env.HYPIXEL_API_KEY) return null;
+  const res = await fetch('https://api.hypixel.net/v2/skyblock/bazaar', {
+    headers: { 'API-Key': process.env.HYPIXEL_API_KEY },
+  });
+  if (!res.ok) throw new Error(`bazaar HTTP ${res.status}`);
+  const json = await res.json();
+  if (!json.success || !json.products) throw new Error('bazaar body inválido');
+  return json.products;
+}
+
+async function sendAlertMessage(alert, priceNow, product = null) {
+  const channel = client.channels.cache.get(alert.channelId);
+  if (!channel || !channel.isTextBased()) {
+    console.error(`Alert ${alert.id}: canal ${alert.channelId} não encontrado no cache`);
+    return;
+  }
+
+  const itemName = ALERT_ITEMS[alert.itemId] || alert.itemId;
+  const arrow = alert.direction === 'below' ? 'abaixo de' : 'acima de';
+  const quantized =
+    typeof product.lastUpdated === 'number' ? timeAgo(Date.now() - product.lastUpdated) : '';
+
+  const embed = new EmbedBuilder()
+    .setColor(alertItemColor(alert.itemId))
+    .setTitle(`${itemName} cruzou o limiar`)
+    .setDescription(
+      `**Item:** ${itemName}\n` +
+        `**Limiar:** ${alert.priceKind} ${arrow} **${exactCoins(alert.threshold)}** coins\n` +
+        `**Preço atual (${alert.priceKind}):** **${exactCoins(priceNow)}** coins`
+    )
+    .setFooter({
+      text: `Disparou a ${formatLisbonTime(new Date())}${quantized ? ` • dados de há ${quantized}` : ''}`,
+    });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`alert_disable_${alert.id}`)
+      .setLabel('Desativar alerta')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  try {
+    await channel.send({
+      content: `<@${alert.createdBy}> — ${itemName} ${arrow} **${exactCoins(alert.threshold)}** coins (${alert.priceKind})!`,
+      embeds: [embed],
+      components: [row],
+    });
+  } catch (err) {
+    console.error(`Alert ${alert.id}: falha ao enviar para ${alert.channelId}:`, err.message);
+  }
+}
+
+async function alertPollTick() {
+  const active = alerts.filter((a) => a.state === 'armed' || a.state === 'fired');
+  if (!active.length) return;
+
+  let products;
+  try {
+    products = await fetchBazaarPrices();
+  } catch (err) {
+    console.error('Alert poll: não foi possível buscar preços da bazaar:', err.message);
+    return;
+  }
+  if (!products) return;
+
+  for (const alert of active) {
+    const product = products[alert.itemId];
+    if (!product || !product.quick_status) continue;
+    const priceNow =
+      alert.priceKind === 'buy' ? product.quick_status.buyPrice : product.quick_status.sellPrice;
+    if (typeof priceNow !== 'number' || !isFinite(priceNow)) continue;
+
+    const crossed =
+      alert.direction === 'below' ? priceNow < alert.threshold : priceNow > alert.threshold;
+    const safe =
+      alert.direction === 'below' ? priceNow >= alert.threshold : priceNow <= alert.threshold;
+
+    if (alert.state === 'fired') {
+      if (safe) {
+        alert.state = 'armed';
+        saveAlerts();
+      }
+      continue;
+    }
+
+    if (crossed) {
+      alert.state = 'fired';
+      saveAlerts();
+      await sendAlertMessage(alert, priceNow, product);
+    }
+  }
+}
+
+async function handleAlertCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === 'add') {
+    if (!process.env.HYPIXEL_API_KEY) {
+      return interaction.reply({
+        content: '**HYPIXEL_API_KEY** não está configurada — os alertas não podem funcionar.',
+        ephemeral: true,
+      });
+    }
+
+    const itemId = interaction.options.getString('item', true);
+    const threshold = interaction.options.getInteger('threshold', true);
+    const direction = interaction.options.getString('direction', true);
+    const priceKind = interaction.options.getString('price') || 'sell';
+    const channel = interaction.options.getChannel('channel') || interaction.channel;
+
+    if (threshold <= 0) {
+      return interaction.reply({ content: 'O threshold tem de ser maior que 0.', ephemeral: true });
+    }
+    if (!channel || !channel.isTextBased()) {
+      return interaction.reply({
+        content: 'O canal escolhido não é válido para mensagens.',
+        ephemeral: true,
+      });
+    }
+    const canSend = (() => {
+      try {
+        const perms = channel.permissionsFor(client.user.id);
+        return !perms || perms.has(['ViewChannel', 'SendMessages']);
+      } catch {
+        return true;
+      }
+    })();
+    if (!canSend) {
+      return interaction.reply({
+        content: `Não tenho permissões para enviar mensagens em <#${channel.id}>.`,
+        ephemeral: true,
+      });
+    }
+
+    const alert = {
+      id: genAlertId(),
+      itemId,
+      threshold,
+      direction,
+      priceKind,
+      channelId: channel.id,
+      createdBy: interaction.user.id,
+      createdAt: Date.now(),
+      state: 'armed',
+    };
+    alerts.push(alert);
+    saveAlerts();
+
+    const arrow = direction === 'below' ? 'abaixo de' : 'acima de';
+    return interaction.reply({
+      content:
+        `Alerta criado — id \`${alert.id}\`\n` +
+        `• ${ALERT_ITEMS[itemId]} ${arrow} **${exactCoins(threshold)}** coins (${priceKind})\n` +
+        `• Canal: <#${channel.id}>\n` +
+        `• O bot verifica a cada 5 min e dispara a cada passagem até desligares o alerta.`,
+      ephemeral: true,
+    });
+  }
+
+  if (sub === 'list') {
+    if (!alerts.length) {
+      return interaction.reply({
+        content: 'Sem alertas. Usa `/alert add` para criar um.',
+        ephemeral: true,
+      });
+    }
+    const embed = new EmbedBuilder()
+      .setColor(0x00d26a)
+      .setTitle('Alertas de preço')
+      .setDescription(`${alerts.length} alertas ativos`);
+    const lines = alerts.map((a) => {
+      const arrow = a.direction === 'below' ? 'abaixo de' : 'acima de';
+      return `\`${a.id}\` • **${ALERT_ITEMS[a.itemId] || a.itemId}** ${arrow} ${exactCoins(a.threshold)} (${a.priceKind}) — <#${a.channelId}> — ${alertStateLabel(a.state)}`;
+    });
+    addChunkedFields(embed, 'Alerta', lines, 900);
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  if (sub === 'remove') {
+    const id = interaction.options.getString('id', true);
+    const idx = alerts.findIndex((a) => a.id === id);
+    if (idx === -1) {
+      return interaction.reply({ content: `Alerta \`${id}\` não encontrado.`, ephemeral: true });
+    }
+    const [removed] = alerts.splice(idx, 1);
+    saveAlerts();
+    return interaction.reply({
+      content: `Alerta \`${id}\` removido (${ALERT_ITEMS[removed.itemId] || removed.itemId}).`,
+      ephemeral: true,
+    });
+  }
+
+  if (sub === 'reset') {
+    const id = interaction.options.getString('id', true);
+    const alert = alerts.find((a) => a.id === id);
+    if (!alert) {
+      return interaction.reply({ content: `Alerta \`${id}\` não encontrado.`, ephemeral: true });
+    }
+    alert.state = 'armed';
+    saveAlerts();
+    return interaction.reply({ content: `Alerta \`${id}\` rearmado.`, ephemeral: true });
+  }
+}
+
+async function handleAlertButton(interaction) {
+  const prefix = 'alert_disable_';
+  if (!interaction.customId.startsWith(prefix)) return;
+  const id = interaction.customId.slice(prefix.length);
+  const alert = alerts.find((a) => a.id === id);
+  if (!alert) {
+    return interaction.reply({ content: 'Alerta não encontrado.', ephemeral: true });
+  }
+  alert.state = 'disabled';
+  saveAlerts();
+  try {
+    await interaction.update({ components: [] });
+  } catch (err) {
+    console.error(`Alert ${id}: falha ao atualizar a mensagem do botão:`, err.message);
+  }
+  return interaction.followUp({
+    content: `Alerta \`${id}\` desativado. Usa \`/alert reset ${id}\` para reativar.`,
+    ephemeral: true,
+  });
+}
 
 const token = process.env.DISCORD_TOKEN;
 
