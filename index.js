@@ -127,62 +127,6 @@ function formatLisbonTime(date) {
   }).format(date);
 }
 
-const ELECTION_COLORS = ['#00d26a', '#ffaa00', '#4da6ff', '#ff5757', '#a06bff', '#2ee6a8'];
-
-function buildElectionChart(sorted, year) {
-  const topVotes = sorted[0] ? sorted[0].votes : 0;
-  const config = {
-    type: 'bar',
-    data: {
-      labels: sorted.map((c) => c.name),
-      datasets: [
-        {
-          label: 'Votes',
-          data: sorted.map((c) => c.votes),
-          backgroundColor: sorted.map((_, i) => ELECTION_COLORS[i % ELECTION_COLORS.length]),
-          borderRadius: 5,
-          maxBarThickness: 44,
-        },
-      ],
-    },
-    options: {
-      indexAxis: 'y',
-      plugins: {
-        legend: { display: false },
-        title: {
-          display: true,
-          text: `Election Year ${year} — Votes`,
-          color: '#ffffff',
-          font: { size: 16 },
-        },
-        tooltip: {
-          callbacks: {
-            label: "function(ctx){ return ' ' + Number(ctx.parsed.x).toLocaleString('en-US') + ' votes'; }",
-          },
-        },
-      },
-      scales: {
-        x: {
-          ticks: {
-            callback:
-              "function(v){ if (v >= 1000000) return (v/1000000).toFixed(0) + 'M'; if (v >= 1000) return (v/1000).toFixed(0) + 'k'; return v; }",
-            color: '#ffffff',
-          },
-          grid: { color: 'rgba(255,255,255,0.08)' },
-        },
-        y: {
-          ticks: { color: '#ffffff', font: { size: 13 } },
-          grid: { display: false },
-        },
-      },
-    },
-  };
-  return (
-    'https://quickchart.io/chart?width=720&height=440&backgroundColor=36393f&c=' +
-    encodeURIComponent(JSON.stringify(config))
-  );
-}
-
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
 const DEPLOY_LABEL = 'v2-diagnostics';
@@ -539,17 +483,24 @@ async function buildElectionEmbed() {
         ? `\n**Termina em:** ${formatLisbonTime(new Date(endMs))} (hora de Portugal)\n**Falta:** ${formatCountdown(remainingMs)}`
         : '';
 
-    const leaderPct = totalVotes ? ((sorted[0].votes / totalVotes) * 100).toFixed(1) : '0.0';
-
     embed.addFields({
       name: `**Ongoing Election — Year ${election.year}**`,
       value:
         `**${totalVotes.toLocaleString()} total votes**` +
         (countdownLine ? `\n${countdownLine}` : '') +
-        `\n**Líder:** ${sorted[0].name} (${leaderPct}%)`,
+        '\n' +
+        sorted
+          .map((c) => {
+            const pct = totalVotes ? ((c.votes / totalVotes) * 100).toFixed(1) : '0.0';
+            const ministerPerk = c.perks.find((p) => p.minister);
+            const line = `• **${c.name}** - ${c.votes.toLocaleString()} votes (${pct}%)`;
+            const perkLine = ministerPerk
+              ? `    ⤷ Minister perk: **${ministerPerk.name}** - ${stripMc(ministerPerk.description).slice(0, 100)}`
+              : '';
+            return perkLine ? `${line}\n${perkLine}` : line;
+          })
+          .join('\n'),
     });
-
-    embed.setImage(buildElectionChart(sorted, election.year));
   } else {
     embed.addFields({
       name: '**Election**',
