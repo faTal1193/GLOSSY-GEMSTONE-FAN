@@ -40,7 +40,7 @@ const commands = [
         options: [
           {
             name: 'item',
-            description: 'Item to track',
+            description: 'Item a seguir',
             type: 3,
             required: true,
             choices: [
@@ -48,20 +48,20 @@ const commands = [
               { name: 'Avaricious Chalice', value: 'AVARICIOUS_CHALICE' },
             ],
           },
-          { name: 'threshold', description: 'Target price in coins', type: 4, required: true },
+          { name: 'preco', description: 'Preço alvo em coins', type: 4, required: true },
           {
-            name: 'direction',
-            description: 'below: price drops under / above: price goes over the threshold',
+            name: 'direcao',
+            description: 'Baixo: preço desce abaixo do alvo / Cima: preço sobe acima do alvo',
             type: 3,
             required: true,
             choices: [
-              { name: 'below (abaixo de)', value: 'below' },
-              { name: 'above (acima de)', value: 'above' },
+              { name: 'Baixo (preço desce)', value: 'baixo' },
+              { name: 'Cima (preço sobe)', value: 'cima' },
             ],
           },
           {
-            name: 'price',
-            description: 'Bazaar price to watch (default: sell)',
+            name: 'tipo',
+            description: 'Tipo de preço a vigiar: sell ou buy (default: sell)',
             type: 3,
             required: false,
             choices: [
@@ -71,7 +71,7 @@ const commands = [
           },
           {
             name: 'channel',
-            description: 'Channel for the alert (default: current channel)',
+            description: 'Canal para o alerta (default: canal atual)',
             type: 7,
             required: false,
             channel_types: [0, 5],
@@ -634,7 +634,7 @@ async function buildElectionEmbed() {
     const remainingMs = endMs - lastUpdated.getTime();
     const countdownLine =
       remainingMs > 0
-        ? `\n**Termina em:** ${formatLisbonTime(new Date(endMs))} (hora de Portugal)\n**Falta:** ${formatCountdown(remainingMs)}`
+        ? `\n**Termina em:** ${formatLisbonTime(new Date(endMs))} \n**Falta:** ${formatCountdown(remainingMs)}`
         : '';
 
     embed.addFields({
@@ -720,6 +720,10 @@ function loadAlerts() {
     if (fs.existsSync(ALERTS_PATH)) {
       const parsed = JSON.parse(fs.readFileSync(ALERTS_PATH, 'utf8'));
       alerts = Array.isArray(parsed) ? parsed : Array.isArray(parsed.alerts) ? parsed.alerts : [];
+      for (const a of alerts) {
+        if (a.direction === 'below') a.direction = 'baixo';
+        else if (a.direction === 'above') a.direction = 'cima';
+      }
     }
   } catch (err) {
     console.error('Could not load alerts.json:', err.message);
@@ -764,7 +768,7 @@ async function sendAlertMessage(alert, priceNow, product = null) {
   }
 
   const itemName = ALERT_ITEMS[alert.itemId] || alert.itemId;
-  const arrow = alert.direction === 'below' ? 'abaixo de' : 'acima de';
+  const arrow = alert.direction === 'baixo' ? 'abaixo de' : 'acima de';
   const quantized =
     typeof product.lastUpdated === 'number' ? timeAgo(Date.now() - product.lastUpdated) : '';
 
@@ -819,9 +823,9 @@ async function alertPollTick() {
     if (typeof priceNow !== 'number' || !isFinite(priceNow)) continue;
 
     const crossed =
-      alert.direction === 'below' ? priceNow < alert.threshold : priceNow > alert.threshold;
+      alert.direction === 'baixo' ? priceNow < alert.threshold : priceNow > alert.threshold;
     const safe =
-      alert.direction === 'below' ? priceNow >= alert.threshold : priceNow <= alert.threshold;
+      alert.direction === 'baixo' ? priceNow >= alert.threshold : priceNow <= alert.threshold;
 
     if (alert.state === 'fired') {
       if (safe) {
@@ -851,9 +855,9 @@ async function handleAlertCommand(interaction) {
     }
 
     const itemId = interaction.options.getString('item', true);
-    const threshold = interaction.options.getInteger('threshold', true);
-    const direction = interaction.options.getString('direction', true);
-    const priceKind = interaction.options.getString('price') || 'sell';
+    const threshold = interaction.options.getInteger('preco', true);
+    const direction = interaction.options.getString('direcao', true);
+    const priceKind = interaction.options.getString('tipo') || 'sell';
     const channel = interaction.options.getChannel('channel') || interaction.channel;
 
     if (threshold <= 0) {
@@ -894,7 +898,7 @@ async function handleAlertCommand(interaction) {
     alerts.push(alert);
     saveAlerts();
 
-    const arrow = direction === 'below' ? 'abaixo de' : 'acima de';
+    const arrow = direction === 'baixo' ? 'abaixo de' : 'acima de';
     return interaction.reply({
       content:
         `Alerta criado — id \`${alert.id}\`\n` +
@@ -917,7 +921,7 @@ async function handleAlertCommand(interaction) {
       .setTitle('Alertas de preço')
       .setDescription(`${alerts.length} alertas ativos`);
     const lines = alerts.map((a) => {
-      const arrow = a.direction === 'below' ? 'abaixo de' : 'acima de';
+      const arrow = a.direction === 'baixo' ? 'abaixo de' : 'acima de';
       return `\`${a.id}\` • **${ALERT_ITEMS[a.itemId] || a.itemId}** ${arrow} ${exactCoins(a.threshold)} (${a.priceKind}) — <#${a.channelId}> — ${alertStateLabel(a.state)}`;
     });
     addChunkedFields(embed, 'Alerta', lines, 900);
