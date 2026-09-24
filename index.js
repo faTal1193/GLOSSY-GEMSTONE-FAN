@@ -825,13 +825,18 @@ async function alertPollTick() {
 
     const crossed =
       alert.direction === 'baixo' ? priceNow < alert.threshold : priceNow > alert.threshold;
-    const safe =
-      alert.direction === 'baixo' ? priceNow >= alert.threshold : priceNow <= alert.threshold;
 
     if (alert.state === 'fired') {
-      if (safe) {
+      const rearmsafe =
+        alert.direction === 'baixo'
+          ? priceNow >= alert.threshold * 1.05
+          : priceNow <= alert.threshold * 0.95;
+      if (rearmsafe) {
         alert.state = 'armed';
         saveAlerts();
+        console.log(
+          `[alert] ${alert.id} rearmado: ${alert.itemId} ${alert.priceKind} ${Math.round(priceNow)} (limiar ${alert.threshold})`
+        );
       }
       continue;
     }
@@ -839,6 +844,9 @@ async function alertPollTick() {
     if (crossed) {
       alert.state = 'fired';
       saveAlerts();
+      console.log(
+        `[alert] ${alert.id} disparou: ${alert.itemId} ${alert.priceKind} ${Math.round(priceNow)} ${alert.direction} limiar ${alert.threshold}`
+      );
       await sendAlertMessage(alert, priceNow, product);
     }
   }
