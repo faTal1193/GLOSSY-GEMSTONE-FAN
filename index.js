@@ -314,38 +314,134 @@ async function countInventory(value) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function fetchJsonWithRetry(url, options, attempts = 3) {
+  let lastStatus = 0;
+  let lastError = 'resposta inválida';
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const res = await fetch(url, options);
+      const text = await res.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
+      lastStatus = res.status;
+      if (res.ok && json && !json.slug) return { ok: true, json };
+      if (json && json.slug) lastError = json.message || json.slug;
+      else lastError = `HTTP ${res.status}`;
+      if (res.status === 404 || (res.status !== 429 && res.status < 500)) {
+        return { ok: false, status: res.status, error: lastError };
+      }
+    } catch (err) {
+      lastStatus = 0;
+      lastError = err.message;
+    }
+    if (i < attempts - 1) await sleep(500 * (i + 1));
+  }
+  return { ok: false, status: lastStatus, error: lastError };
+}
+
 const uuidCache = new Map();
 let nextAllowedMojangCall = 0;
+
+const UUID_HEADERS = {
+  'User-Agent': 'GlossyGemstoneBot/1.0',
+  Accept: 'application/json',
+};
+
+function normalizeUuid(id) {
+  return typeof id === 'string' ? id.replace(/-/g, '').toLowerCase() : '';
+}
+
+function uuidFailureReason(uuid) {
+  if (uuid.notFound) return 'jogador desconhecido';
+  if (uuid.status === 429) return 'rate limit ao obter UUID';
+  if (uuid.status) return `falha ao obter UUID (HTTP ${uuid.status})`;
+  return 'falha ao obter UUID';
+}
+
+async function getUuidFallback(name) {
+  try {
+    const res = await fetch(
+      `https://sky.coflnet.com/api/search/player/${encodeURIComponent(name)}`,
+      { headers: UUID_HEADERS }
+    );
+    if (res.ok) {
+      const list = await res.json().catch(() => null);
+      const match =
+        Array.isArray(list) &&
+        list.find(
+          (p) => p && typeof p.name === 'string' && p.name.toLowerCase() === name.toLowerCase()
+        );
+      if (match && match.uuid) return { ok: true, id: normalizeUuid(match.uuid) };
+    }
+  } catch (err) {
+    console.error(`[${name}] SkyCofl search falhou: ${err.message}`);
+  }
+
+  try {
+    const res = await fetch(
+      `https://playerdb.co/api/player/minecraft/${encodeURIComponent(name)}`,
+      { headers: UUID_HEADERS }
+    );
+    if (res.ok) {
+      const json = await res.json().catch(() => null);
+      const player = json && json.data && json.data.player;
+      const rawId = player && (player.raw_id || player.id);
+      if (rawId) return { ok: true, id: normalizeUuid(rawId) };
+    }
+  } catch (err) {
+    console.error(`[${name}] PlayerDB falhou: ${err.message}`);
+  }
+
+  return { ok: false, notFound: false, status: 0 };
+}
 
 async function getUuid(name) {
   const lower = name.toLowerCase();
   const cached = uuidCache.get(lower);
   if (cached) return { ok: true, id: cached };
 
-  const waitMs = Math.max(0, nextAllowedMojangCall - Date.now());
-  if (waitMs > 0) await sleep(waitMs);
-  nextAllowedMojangCall = Date.now() + 500;
-
-  const mojangRes = await fetch(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(name)}`, {
-    headers: { 'User-Agent': 'GlossyGemstoneBot/1.0' },
-  });
-
-  if (mojangRes.status === 204 || mojangRes.status === 404) {
-    return { ok: false, notFound: true, status: mojangRes.status };
+  let result = { ok: false, notFound: false, status: 0 };
+  if (Date.now() >= nextAllowedMojangCall) {
+    nextAllowedMojangCall = Date.now() + 500;
+    try {
+      const mojangRes = await fetch(
+        `https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(name)}`,
+        { headers: UUID_HEADERS }
+      );
+      if (mojangRes.status === 204 || mojangRes.status === 404) {
+        result = { ok: false, notFound: true, status: mojangRes.status };
+      } else if (mojangRes.status === 429) {
+        const retryAfter = Math.min(Number(mojangRes.headers.get('retry-after')) || 5, 10);
+        nextAllowedMojangCall = Date.now() + retryAfter * 1000;
+        result = { ok: false, notFound: false, status: 429 };
+      } else if (!mojangRes.ok) {
+        result = { ok: false, notFound: false, status: mojangRes.status };
+      } else {
+        const mojang = await mojangRes.json().catch(() => null);
+        if (mojang && mojang.id) {
+          result = { ok: true, id: normalizeUuid(mojang.id) };
+        } else {
+          result = { ok: false, notFound: true, status: mojangRes.status };
+        }
+      }
+    } catch (err) {
+      result = { ok: false, notFound: false, status: 0 };
+    }
+  } else {
+    result = { ok: false, notFound: false, status: 429 };
   }
-  if (mojangRes.status === 429) {
-    const retryAfter = Number(mojangRes.headers.get('retry-after')) || 10;
-    nextAllowedMojangCall = Date.now() + retryAfter * 1000;
-    return { ok: false, notFound: false, status: 429 };
-  }
-  if (!mojangRes.ok) {
-    return { ok: false, notFound: false, status: mojangRes.status };
+
+  if (!result.ok) {
+    const fallback = await getUuidFallback(name);
+    if (fallback.ok) result = fallback;
   }
 
-  const mojang = await mojangRes.json().catch(() => null);
-  if (!mojang || !mojang.id) return { ok: false, notFound: true, status: 204 };
-  uuidCache.set(lower, mojang.id);
-  return { ok: true, id: mojang.id };
+  if (result.ok) uuidCache.set(lower, result.id);
+  return result;
 }
 
 async function getPlayerGlossiesHypixel(name) {
@@ -355,11 +451,7 @@ async function getPlayerGlossiesHypixel(name) {
 
   const uuid = await getUuid(name);
   if (!uuid.ok) {
-    const reason = uuid.notFound
-      ? 'jogador desconhecido'
-      : uuid.status === 429
-        ? 'rate limit da Mojang'
-        : `falha da Mojang (HTTP ${uuid.status})`;
+    const reason = uuidFailureReason(uuid);
     console.error(`[${name}] Não foi possível obter UUID: ${reason}`);
     return { count: 0, reason };
   }
@@ -448,22 +540,19 @@ async function getPlayerGlossiesHypixel(name) {
 async function getPlayerGlossiesCoflnet(name) {
   const uuid = await getUuid(name);
   if (!uuid.ok) {
-    const reason = uuid.notFound
-      ? 'jogador desconhecido'
-      : uuid.status === 429
-        ? 'rate limit da Mojang'
-        : `falha da Mojang (HTTP ${uuid.status})`;
+    const reason = uuidFailureReason(uuid);
     console.error(`[${name}] Não foi possível obter UUID: ${reason}`);
     return { count: 0, reason };
   }
 
-  const listRes = await fetch(`https://sky.coflnet.com/api/profile/${uuid.id}`, {
+  const list = await fetchJsonWithRetry(`https://sky.coflnet.com/api/profile/${uuid.id}`, {
     headers: COFLNET_HEADERS,
   });
-  if (!listRes.ok) return { count: 0, reason: `SkyCofl HTTP ${listRes.status}` };
+  if (!list.ok) {
+    return { count: 0, reason: `SkyCofl: ${list.error || `HTTP ${list.status}`}` };
+  }
 
-  const list = await listRes.json().catch(() => null);
-  const profiles = list && list.profiles;
+  const profiles = list.json && list.json.profiles;
   if (!profiles || !Object.keys(profiles).length) {
     return { count: 0, reason: 'sem perfis SkyBlock (API desligada?)' };
   }
@@ -474,12 +563,15 @@ async function getPlayerGlossiesCoflnet(name) {
     Object.entries(profiles)[0];
   const [profileName, profileId] = entry;
 
-  const res = await fetch(`https://sky.coflnet.com/api/profile/${uuid.id}/${profileId}`, {
-    headers: COFLNET_HEADERS,
-  });
-  if (!res.ok) return { count: 0, reason: `SkyCofl HTTP ${res.status}` };
+  const res = await fetchJsonWithRetry(
+    `https://sky.coflnet.com/api/profile/${uuid.id}/${profileId}`,
+    { headers: COFLNET_HEADERS }
+  );
+  if (!res.ok) {
+    return { count: 0, reason: `SkyCofl: ${res.error || `HTTP ${res.status}`}` };
+  }
 
-  const member = await res.json().catch(() => null);
+  const member = res.json;
   if (!member || !member.player_id) {
     return { count: 0, reason: 'perfil indisponível na SkyCofl' };
   }
@@ -507,7 +599,8 @@ async function getPlayerGlossies(name) {
   if (!cozy.reason) return cozy;
   if (process.env.HYPIXEL_API_KEY) {
     console.warn(`[${name}] SkyCofl indisponível (${cozy.reason}); a tentar Hypixel.`);
-    return getPlayerGlossiesHypixel(name);
+    const hypixel = await getPlayerGlossiesHypixel(name);
+    if (!hypixel.reason) return hypixel;
   }
   return cozy;
 }
