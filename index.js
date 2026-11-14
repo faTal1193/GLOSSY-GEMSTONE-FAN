@@ -1,7 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Events, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, Events, REST, Routes, ActivityType } = require('discord.js');
 const { parse: parseNbt, simplify: simplifyNbt } = require('prismarine-nbt');
 
 const client = new Client({
@@ -11,6 +11,13 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
 });
+
+function setBotPresence() {
+  client.user.setPresence({
+    status: 'online',
+    activities: [{ name: ' ', type: ActivityType.Streaming, url: 'https://twitch.tv/glossygemstone' }],
+  });
+}
 
 const commands = [
   {
@@ -97,6 +104,7 @@ const commands = [
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
+  setBotPresence();
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
@@ -244,9 +252,14 @@ function addChunkedFields(embed, name, lines, maxChars = 1000) {
   }
 }
 
-const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman'];
+const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman', 'Blazecraft_edu', 'V1D_exe'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
-const DEPLOY_LABEL = 'v2-diagnostics';
+const TARGET_PROFILE = process.env.GLOSSY_PROFILE || 'Papaya';
+const COFLNET_HEADERS = {
+  'User-Agent': 'GlossyGemstoneBot/1.0',
+  Accept: 'application/json',
+};
+const DEPLOY_LABEL = 'v3-coflnet';
 
 function isGlossyItem(item) {
   if (!item) return false;
@@ -335,7 +348,7 @@ async function getUuid(name) {
   return { ok: true, id: mojang.id };
 }
 
-async function getPlayerGlossies(name) {
+async function getPlayerGlossiesHypixel(name) {
   if (!process.env.HYPIXEL_API_KEY) {
     return { count: 0, reason: 'HYPIXEL_API_KEY não definida' };
   }
@@ -386,8 +399,6 @@ async function getPlayerGlossies(name) {
     return { count: 0, reason: 'sem perfis SkyBlock (API desligada?)' };
   }
 
-  const TARGET_PROFILE = 'Avocado';
-
   const sorted = json.profiles
     .map((profile) => {
       const member = profile.members && profile.members[uuid.id] ? profile.members[uuid.id] : null;
@@ -432,6 +443,73 @@ async function getPlayerGlossies(name) {
   total += Number(sacksCounts) || 0;
 
   return { count: total, profileName: profile.cute_name || 'Unknown', lastSave: member.last_save || null };
+}
+
+async function getPlayerGlossiesCoflnet(name) {
+  const uuid = await getUuid(name);
+  if (!uuid.ok) {
+    const reason = uuid.notFound
+      ? 'jogador desconhecido'
+      : uuid.status === 429
+        ? 'rate limit da Mojang'
+        : `falha da Mojang (HTTP ${uuid.status})`;
+    console.error(`[${name}] Não foi possível obter UUID: ${reason}`);
+    return { count: 0, reason };
+  }
+
+  const listRes = await fetch(`https://sky.coflnet.com/api/profile/${uuid.id}`, {
+    headers: COFLNET_HEADERS,
+  });
+  if (!listRes.ok) return { count: 0, reason: `SkyCofl HTTP ${listRes.status}` };
+
+  const list = await listRes.json().catch(() => null);
+  const profiles = list && list.profiles;
+  if (!profiles || !Object.keys(profiles).length) {
+    return { count: 0, reason: 'sem perfis SkyBlock (API desligada?)' };
+  }
+
+  const wanted = TARGET_PROFILE.toLowerCase();
+  const entry =
+    Object.entries(profiles).find(([cuteName]) => cuteName.toLowerCase() === wanted) ||
+    Object.entries(profiles)[0];
+  const [profileName, profileId] = entry;
+
+  const res = await fetch(`https://sky.coflnet.com/api/profile/${uuid.id}/${profileId}`, {
+    headers: COFLNET_HEADERS,
+  });
+  if (!res.ok) return { count: 0, reason: `SkyCofl HTTP ${res.status}` };
+
+  const member = await res.json().catch(() => null);
+  if (!member || !member.player_id) {
+    return { count: 0, reason: 'perfil indisponível na SkyCofl' };
+  }
+
+  const inventory = member.inventory;
+  if (!inventory) return { count: 0, reason: 'inventário desligado na API' };
+
+  let total = 0;
+  for (const [key, value] of Object.entries(inventory)) {
+    if (key === 'sacks_counts' || key === 'backpack_icons' || key === 'wardrobe_equipped_slot') {
+      continue;
+    }
+    total += await countInventory(value);
+  }
+  total += Number(inventory.sacks_counts && inventory.sacks_counts[GLOSSY_ITEM_ID]) || 0;
+
+  return { count: total, profileName };
+}
+
+async function getPlayerGlossies(name) {
+  const cozy = await getPlayerGlossiesCoflnet(name).catch((err) => {
+    console.error(`[${name}] SkyCofl falhou: ${err.message}`);
+    return { count: 0, reason: `SkyCofl: ${err.message}` };
+  });
+  if (!cozy.reason) return cozy;
+  if (process.env.HYPIXEL_API_KEY) {
+    console.warn(`[${name}] SkyCofl indisponível (${cozy.reason}); a tentar Hypixel.`);
+    return getPlayerGlossiesHypixel(name);
+  }
+  return cozy;
 }
 
 async function verifyHypixelKey() {
@@ -540,24 +618,20 @@ async function buildGlossyEmbed() {
   const data = await fetchBazaarData('GLOSSY_GEMSTONE');
 
   let glossiesField;
-  if (!process.env.HYPIXEL_API_KEY) {
-    glossiesField = 'Add **HYPIXEL_API_KEY** on Railway to enable this.';
-  } else {
-    const results = [];
-    for (const player of GLOSSY_PLAYERS) {
-      results.push(await getPlayerGlossies(player));
-    }
-    glossiesField = results
-      .map((result, index) => {
-        const name = GLOSSY_PLAYERS[index];
-        if (result.reason) {
-          return `• **${name}** — N/A (${result.reason})`;
-        }
-        const saved = result.lastSave ? ` · save ${timeAgo(result.lastSave)}` : '';
-        return `• **${name}** — ||${String(result.count).padStart(5, '0')}|| (${result.profileName}${saved})`;
-      })
-      .join('\n');
+  const results = [];
+  for (const player of GLOSSY_PLAYERS) {
+    results.push(await getPlayerGlossies(player));
   }
+  glossiesField = results
+    .map((result, index) => {
+      const name = GLOSSY_PLAYERS[index];
+      if (result.reason) {
+        return `• **${name}** — N/A (${result.reason})`;
+      }
+      const saved = result.lastSave ? ` · save ${timeAgo(result.lastSave)}` : '';
+      return `• **${name}** — ||${String(result.count).padStart(5, '0')}|| (${result.profileName}${saved})`;
+    })
+    .join('\n');
 
   const embed = new EmbedBuilder()
     .setColor(0x00d26a)
@@ -1000,7 +1074,7 @@ if (process.env.HYPIXEL_API_KEY) {
   verifyHypixelKey();
 } else {
   console.warn(
-    'Aviso: HYPIXEL_API_KEY não está definida — as contagens de jogadores no /glossy ficarão indisponíveis.'
+    'Aviso: HYPIXEL_API_KEY não está definida — os alertas de preço no /alert ficarão indisponíveis.'
   );
 }
 
