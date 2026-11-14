@@ -37,6 +37,10 @@ const commands = [
     description: 'Shows Avaricious Chalice bazaar price with a 7-day chart',
   },
   {
+    name: 'networth',
+    description: 'Compare the networth of 2-5 players from the glossy list (SkyCrypt-style details)',
+  },
+  {
     name: 'alert',
     description: 'Price alerts for Glossy Gemstone / Avaricious Chalice',
     options: [
@@ -138,6 +142,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return handleAlertButton(interaction);
   }
 
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'networth_select') {
+      return handleNetworthSelect(interaction);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'test') {
@@ -180,12 +191,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
+  if (interaction.commandName === 'networth') {
+    return interaction.reply({
+      content: 'Select 2 to 5 players to compare their networth:',
+      components: [buildNetworthSelectRow()],
+    });
+  }
+
   if (interaction.commandName === 'alert') {
     await handleAlertCommand(interaction);
   }
 });
 
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const {
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+} = require('discord.js');
 
 const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, '');
 
@@ -259,7 +284,7 @@ const COFLNET_HEADERS = {
   'User-Agent': 'GlossyGemstoneBot/1.0',
   Accept: 'application/json',
 };
-const DEPLOY_LABEL = 'v3-coflnet';
+const DEPLOY_LABEL = 'v4-networth';
 
 function isGlossyItem(item) {
   if (!item) return false;
@@ -537,24 +562,24 @@ async function getPlayerGlossiesHypixel(name) {
   return { count: total, profileName: profile.cute_name || 'Unknown', lastSave: member.last_save || null };
 }
 
-async function getPlayerGlossiesCoflnet(name) {
+async function fetchCoflnetMember(name) {
   const uuid = await getUuid(name);
   if (!uuid.ok) {
     const reason = uuidFailureReason(uuid);
     console.error(`[${name}] Não foi possível obter UUID: ${reason}`);
-    return { count: 0, reason };
+    return { ok: false, reason };
   }
 
   const list = await fetchJsonWithRetry(`https://sky.coflnet.com/api/profile/${uuid.id}`, {
     headers: COFLNET_HEADERS,
   });
   if (!list.ok) {
-    return { count: 0, reason: `SkyCofl: ${list.error || `HTTP ${list.status}`}` };
+    return { ok: false, reason: `SkyCofl: ${list.error || `HTTP ${list.status}`}` };
   }
 
   const profiles = list.json && list.json.profiles;
   if (!profiles || !Object.keys(profiles).length) {
-    return { count: 0, reason: 'sem perfis SkyBlock (API desligada?)' };
+    return { ok: false, reason: 'sem perfis SkyBlock (API desligada?)' };
   }
 
   const wanted = TARGET_PROFILE.toLowerCase();
@@ -568,15 +593,22 @@ async function getPlayerGlossiesCoflnet(name) {
     { headers: COFLNET_HEADERS }
   );
   if (!res.ok) {
-    return { count: 0, reason: `SkyCofl: ${res.error || `HTTP ${res.status}`}` };
+    return { ok: false, reason: `SkyCofl: ${res.error || `HTTP ${res.status}`}` };
   }
 
   const member = res.json;
   if (!member || !member.player_id) {
-    return { count: 0, reason: 'perfil indisponível na SkyCofl' };
+    return { ok: false, reason: 'perfil indisponível na SkyCofl' };
   }
 
-  const inventory = member.inventory;
+  return { ok: true, uuid: uuid.id, profileName, profileId, member };
+}
+
+async function getPlayerGlossiesCoflnet(name) {
+  const profile = await fetchCoflnetMember(name);
+  if (!profile.ok) return { count: 0, reason: profile.reason };
+
+  const inventory = profile.member.inventory;
   if (!inventory) return { count: 0, reason: 'inventário desligado na API' };
 
   let total = 0;
@@ -588,7 +620,7 @@ async function getPlayerGlossiesCoflnet(name) {
   }
   total += Number(inventory.sacks_counts && inventory.sacks_counts[GLOSSY_ITEM_ID]) || 0;
 
-  return { count: total, profileName };
+  return { count: total, profileName: profile.profileName };
 }
 
 async function getPlayerGlossies(name) {
@@ -603,6 +635,316 @@ async function getPlayerGlossies(name) {
     if (!hypixel.reason) return hypixel;
   }
   return cozy;
+}
+
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+const NETWORTH_GROUP_ORDER = [
+  { key: 'armor', label: 'Armor' },
+  { key: 'equipment', label: 'Equipment' },
+  { key: 'wardrobe', label: 'Wardrobe' },
+  { key: 'inventory', label: 'Inventory' },
+  { key: 'enderchest', label: 'Ender Chest' },
+  { key: 'backpacks', label: 'Backpacks' },
+  { key: 'accessories', label: 'Accessories' },
+  { key: 'pets', label: 'Pets' },
+  { key: 'quiver', label: 'Quiver' },
+  { key: 'potionBag', label: 'Potion Bag' },
+  { key: 'vault', label: 'Personal Vault' },
+  { key: 'storage', label: 'Storage' },
+  { key: 'museum', label: 'Museum' },
+  { key: 'rift', label: 'Rift' },
+  { key: 'essence', label: 'Essence' },
+  { key: 'gemstones', label: 'Gemstones' },
+  { key: 'sacks', label: 'Sacks' },
+  { key: 'purse', label: 'Purse' },
+  { key: 'bank', label: 'Bank (co-op)' },
+];
+
+function isGemstoneCategory(key) {
+  return /^(ROUGH|FLAWED|FINE|FLAWLESS|PERFECT)_.*_GEM$/.test(key);
+}
+
+function isKnownNetworthCategory(key) {
+  return (
+    key === 'armor' ||
+    key === 'equipment' ||
+    key === 'wardrobe' ||
+    key === 'inventory' ||
+    key === 'enderchest' ||
+    key === 'talismans' ||
+    key === 'Pets' ||
+    key === 'quiver' ||
+    key === 'potion bag' ||
+    key === 'personal vault' ||
+    key === 'storage' ||
+    key === 'museum' ||
+    key === 'sacks' ||
+    key === 'coin purse' ||
+    key === 'bank' ||
+    key.startsWith('backpack ') ||
+    key.startsWith('rift ') ||
+    key.startsWith('essence ') ||
+    isGemstoneCategory(key)
+  );
+}
+
+function aggregateNetworth(categories, bank) {
+  const groups = {};
+  for (const group of NETWORTH_GROUP_ORDER) groups[group.key] = 0;
+  groups.bank = Number(bank) || 0;
+
+  for (const [key, rawValue] of Object.entries(categories || {})) {
+    const value = Number(rawValue) || 0;
+    if (key === 'armor') groups.armor += value;
+    else if (key === 'equipment') groups.equipment += value;
+    else if (key === 'wardrobe') groups.wardrobe += value;
+    else if (key === 'inventory') groups.inventory += value;
+    else if (key === 'enderchest') groups.enderchest += value;
+    else if (key.startsWith('backpack ')) groups.backpacks += value;
+    else if (key === 'talismans') groups.accessories += value;
+    else if (key === 'Pets') groups.pets += value;
+    else if (key === 'quiver') groups.quiver += value;
+    else if (key === 'potion bag') groups.potionBag += value;
+    else if (key === 'personal vault') groups.vault += value;
+    else if (key === 'storage') groups.storage += value;
+    else if (key === 'museum') groups.museum += value;
+    else if (key.startsWith('rift ')) groups.rift += value;
+    else if (key.startsWith('essence ')) groups.essence += value;
+    else if (isGemstoneCategory(key)) groups.gemstones += value;
+    else if (key === 'coin purse') groups.purse += value;
+    else groups.sacks += value;
+  }
+
+  return groups;
+}
+
+function topHoldings(categories, limit = 5) {
+  return Object.entries(categories || {})
+    .filter(([key, value]) => Number(value) > 0 && !isKnownNetworthCategory(key))
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, limit)
+    .map(([key, value]) => ({ key, value: Number(value) }));
+}
+
+function formatItemName(id) {
+  return id
+    .replace(/:/g, ' ')
+    .replace(/_/g, ' ')
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (char) => char.toUpperCase());
+}
+
+function formatNetworth(value) {
+  const n = Number(value) || 0;
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(2)}K`;
+  return String(Math.round(n));
+}
+
+async function fetchNetworthInput(name) {
+  const profile = await fetchCoflnetMember(name);
+  if (!profile.ok) return { ok: false, name, reason: profile.reason };
+  const bank = Number(profile.member.profile && profile.member.profile.bank_account) || 0;
+  return { ok: true, name, ...profile, bank };
+}
+
+async function calculateNetworth(input, sharedBank) {
+  const { name, uuid, profileName, profileId, member } = input;
+  const body = {
+    profile_id: profileId,
+    cute_name: profileName,
+    selected: true,
+    banking: { balance: sharedBank },
+    members: { [uuid]: member },
+  };
+  const res = await fetchJsonWithRetry('https://sky.coflnet.com/api/networth', {
+    method: 'POST',
+    headers: { ...COFLNET_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    return { ok: false, name, reason: `SkyCofl: ${res.error || `HTTP ${res.status}`}` };
+  }
+
+  const memberValue = res.json && res.json.member && res.json.member[uuid];
+  if (!memberValue) {
+    return { ok: false, name, reason: 'networth indisponível na SkyCofl' };
+  }
+
+  const categories = memberValue.valuePerCategory || {};
+  return {
+    ok: true,
+    name,
+    profileName,
+    total: Number(res.json.fullValue) || 0,
+    bank: sharedBank,
+    categories,
+    groups: aggregateNetworth(categories, sharedBank),
+  };
+}
+
+async function getNetworthComparison(names) {
+  const inputs = await mapLimit(names, 3, (name) =>
+    fetchNetworthInput(name).catch((err) => ({
+      ok: false,
+      name,
+      reason: `SkyCofl: ${err.message}`,
+    }))
+  );
+
+  const success = inputs.filter((input) => input.ok);
+  const sharedBank = success.length ? Math.max(...success.map((input) => input.bank || 0)) : 0;
+
+  return mapLimit(inputs, 3, (input) =>
+    input.ok
+      ? calculateNetworth(input, sharedBank).catch((err) => ({
+          ok: false,
+          name: input.name,
+          reason: `SkyCofl: ${err.message}`,
+        }))
+      : input
+  );
+}
+
+function buildNetworthSelectRow(selected = []) {
+  const players = GLOSSY_PLAYERS.slice(0, 25);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('networth_select')
+    .setPlaceholder('Select 2 to 5 players')
+    .setMinValues(2)
+    .setMaxValues(players.length)
+    .addOptions(
+      players.map((name) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(name)
+          .setValue(name)
+          .setDescription(`Compare ${name}'s networth`)
+          .setDefault(selected.includes(name))
+      )
+    );
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+function buildNetworthEmbeds(results) {
+  const ok = results.filter((result) => result.ok).sort((a, b) => b.total - a.total);
+  const failed = results.filter((result) => !result.ok);
+
+  if (!ok.length) {
+    return [
+      new EmbedBuilder()
+        .setColor(0xff5555)
+        .setTitle('SkyBlock Networth - Error')
+        .setDescription(
+          failed.map((result) => `• **${result.name}** — ${result.reason}`).join('\n') ||
+            'Could not calculate networth right now.'
+        )
+        .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` }),
+    ];
+  }
+
+  const leader = ok[0].total;
+  const ranking = ok
+    .map((result, index) => {
+      const diff = result.total - leader;
+      const suffix = index === 0 ? 'leader' : `${formatNetworth(diff)} vs leader`;
+      return (
+        `#${index + 1} **${result.name}** — **${formatNetworth(result.total)}** coins\n` +
+        `   ${exactCoins(result.total)} coins · ${suffix}`
+      );
+    })
+    .join('\n');
+
+  const summary = new EmbedBuilder()
+    .setColor(0xffaa00)
+    .setTitle('SkyBlock Networth - Comparison')
+    .setDescription(
+      `**Profile:** ${ok[0].profileName}\n` +
+        `**Source:** SkyCofl (bazaar + auction)\n\n` +
+        ranking +
+        (failed.length
+          ? `\n\n**Failed:**\n${failed
+              .map((result) => `• **${result.name}** — ${result.reason}`)
+              .join('\n')}`
+          : '')
+    )
+    .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
+
+  const categoryFields = NETWORTH_GROUP_ORDER.map((group) => {
+    const anyValue = ok.some((result) => (result.groups[group.key] || 0) > 0);
+    if (!anyValue && group.key !== 'purse' && group.key !== 'bank') return null;
+    return {
+      name: group.label,
+      value: ok
+        .map((result) => `**${result.name}:** ${formatNetworth(result.groups[group.key] || 0)}`)
+        .join('\n'),
+    };
+  }).filter(Boolean);
+
+  const details = new EmbedBuilder()
+    .setColor(0x00aaff)
+    .setTitle('Networth - Categories')
+    .setDescription(
+      'Values in coins. Purse and the shared co-op bank are included in each total.'
+    )
+    .addFields(categoryFields);
+
+  const holdingsFields = ok.map((result) => {
+    const lines = topHoldings(result.categories, 5).map(
+      (item) => `• ${formatItemName(item.key)}: ${formatNetworth(item.value)}`
+    );
+    return {
+      name: result.name,
+      value: lines.length ? lines.join('\n') : 'No valuable sack items found.',
+    };
+  });
+
+  const holdings = new EmbedBuilder()
+    .setColor(0x9b59b6)
+    .setTitle('Networth - Top Sack Items')
+    .setDescription('Most valuable sack items per player.')
+    .addFields(holdingsFields);
+
+  return [summary, details, holdings];
+}
+
+async function handleNetworthSelect(interaction) {
+  const names = interaction.values.filter((value) => GLOSSY_PLAYERS.includes(value));
+  if (names.length < 2) {
+    return interaction.reply({ content: 'Select at least 2 players.', ephemeral: true });
+  }
+
+  await interaction.deferUpdate();
+  try {
+    const results = await getNetworthComparison(names);
+    await interaction.editReply({
+      content: '',
+      embeds: buildNetworthEmbeds(results),
+      components: [buildNetworthSelectRow(names)],
+    });
+  } catch (err) {
+    console.error('Error in /networth:', err.message);
+    await interaction.editReply({
+      content: 'Could not calculate networth right now. Try again later.',
+      embeds: [],
+      components: [buildNetworthSelectRow(names)],
+    });
+  }
 }
 
 async function verifyHypixelKey() {
