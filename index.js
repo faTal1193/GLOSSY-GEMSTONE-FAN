@@ -886,10 +886,10 @@ function buildNetworthMoneyEmbed(results) {
   const ranking = ok
     .map((result, index) => {
       const diff = result.total - leader;
-      const suffix = index === 0 ? 'leader' : `${formatNetworth(diff)} vs leader`;
+      const suffix = index === 0 ? '' : ` · ${formatNetworth(diff)} difference`;
       return (
         `#${index + 1} **${result.name}** — **${formatNetworth(result.total)}** coins\n` +
-        `   ${exactCoins(result.total)} coins · ${suffix}`
+        `   ${exactCoins(result.total)} coins${suffix}`
       );
     })
     .join('\n');
