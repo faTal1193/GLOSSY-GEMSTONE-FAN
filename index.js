@@ -19,6 +19,9 @@ function setBotPresence() {
   });
 }
 
+const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman', 'Blazecraft_edu', 'V1D_exe'];
+const GLOSSY_PLAYER_CHOICES = GLOSSY_PLAYERS.map((name) => ({ name, value: name }));
+
 const commands = [
   {
     name: 'test',
@@ -38,7 +41,14 @@ const commands = [
   },
   {
     name: 'networth',
-    description: 'Compare the networth of 2-5 players from the glossy list (SkyCrypt-style details)',
+    description: 'Compare the networth of 1-5 players from the glossy list (SkyCofl prices)',
+    options: GLOSSY_PLAYERS.slice(0, 5).map((_, index) => ({
+      name: `player${index + 1}`,
+      description: index === 0 ? 'Player 1 (required)' : `Player ${index + 1} (optional)`,
+      type: 3,
+      required: index === 0,
+      choices: GLOSSY_PLAYER_CHOICES,
+    })),
   },
   {
     name: 'alert',
@@ -139,14 +149,10 @@ client.once(Events.ClientReady, async (c) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isButton()) {
-    return handleAlertButton(interaction);
-  }
-
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === 'networth_select') {
-      return handleNetworthSelect(interaction);
+    if (interaction.customId.startsWith('nw_')) {
+      return handleNetworthViewButton(interaction);
     }
-    return;
+    return handleAlertButton(interaction);
   }
 
   if (!interaction.isChatInputCommand()) return;
@@ -192,10 +198,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   if (interaction.commandName === 'networth') {
-    return interaction.reply({
-      content: 'Select 2 to 5 players to compare their networth:',
-      components: [buildNetworthSelectRow()],
-    });
+    return handleNetworthCommand(interaction);
   }
 
   if (interaction.commandName === 'alert') {
@@ -208,8 +211,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
 } = require('discord.js');
 
 const stripMc = (str) => str.replace(/§[0-9a-fk-or]/gi, '').replace(/\u0026/g, '');
@@ -277,14 +278,13 @@ function addChunkedFields(embed, name, lines, maxChars = 1000) {
   }
 }
 
-const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman', 'Blazecraft_edu', 'V1D_exe'];
 const GLOSSY_ITEM_ID = 'GLOSSY_GEMSTONE';
 const TARGET_PROFILE = process.env.GLOSSY_PROFILE || 'Papaya';
 const COFLNET_HEADERS = {
   'User-Agent': 'GlossyGemstoneBot/1.0',
   Accept: 'application/json',
 };
-const DEPLOY_LABEL = 'v4-networth';
+const DEPLOY_LABEL = 'v5-networth-ui';
 
 function isGlossyItem(item) {
   if (!item) return false;
@@ -794,8 +794,8 @@ async function calculateNetworth(input, sharedBank) {
     profileName,
     total: Number(res.json.fullValue) || 0,
     bank: sharedBank,
-    categories,
     groups: aggregateNetworth(categories, sharedBank),
+    holdings: topHoldings(categories, 5),
   };
 }
 
@@ -822,41 +822,65 @@ async function getNetworthComparison(names) {
   );
 }
 
-function buildNetworthSelectRow(selected = []) {
-  const players = GLOSSY_PLAYERS.slice(0, 25);
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('networth_select')
-    .setPlaceholder('Select 2 to 5 players')
-    .setMinValues(2)
-    .setMaxValues(players.length)
-    .addOptions(
-      players.map((name) =>
-        new StringSelectMenuOptionBuilder()
-          .setLabel(name)
-          .setValue(name)
-          .setDescription(`Compare ${name}'s networth`)
-          .setDefault(selected.includes(name))
-      )
-    );
-  return new ActionRowBuilder().addComponents(menu);
+const NETWORTH_VIEWS = [
+  { key: 'money', label: 'Money' },
+  { key: 'categories', label: 'Categories' },
+  { key: 'items', label: 'Top Sack Items' },
+];
+const NETWORTH_SESSION_TTL_MS = 30 * 60 * 1000;
+const NETWORTH_MAX_SESSIONS = 200;
+const networthSessions = new Map();
+let networthSessionSeq = 0;
+
+function pruneNetworthSessions() {
+  const now = Date.now();
+  for (const [id, session] of networthSessions) {
+    if (now - session.createdAt > NETWORTH_SESSION_TTL_MS) {
+      networthSessions.delete(id);
+    }
+  }
+  while (networthSessions.size > NETWORTH_MAX_SESSIONS) {
+    const oldest = networthSessions.keys().next().value;
+    networthSessions.delete(oldest);
+  }
 }
 
-function buildNetworthEmbeds(results) {
-  const ok = results.filter((result) => result.ok).sort((a, b) => b.total - a.total);
-  const failed = results.filter((result) => !result.ok);
+function createNetworthSession(results) {
+  pruneNetworthSessions();
+  const id = `${Date.now().toString(36)}${(networthSessionSeq++).toString(36)}`;
+  networthSessions.set(id, { results, createdAt: Date.now() });
+  return id;
+}
 
-  if (!ok.length) {
-    return [
-      new EmbedBuilder()
-        .setColor(0xff5555)
-        .setTitle('SkyBlock Networth - Error')
-        .setDescription(
-          failed.map((result) => `• **${result.name}** — ${result.reason}`).join('\n') ||
-            'Could not calculate networth right now.'
-        )
-        .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` }),
-    ];
+function buildNetworthViewRow(sessionId, activeView) {
+  const row = new ActionRowBuilder();
+  for (const view of NETWORTH_VIEWS) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`nw_${view.key}_${sessionId}`)
+        .setLabel(view.label)
+        .setStyle(view.key === activeView ? ButtonStyle.Primary : ButtonStyle.Secondary)
+    );
   }
+  return row;
+}
+
+function buildNetworthErrorEmbed(results) {
+  const failed = results.filter((result) => !result.ok);
+  return new EmbedBuilder()
+    .setColor(0xff5555)
+    .setTitle('SkyBlock Networth - Error')
+    .setDescription(
+      failed.map((result) => `• **${result.name}** — ${result.reason}`).join('\n') ||
+        'Could not calculate networth right now.'
+    )
+    .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
+}
+
+function buildNetworthMoneyEmbed(results) {
+  const ok = results.filter((result) => result.ok).sort((a, b) => b.total - a.total);
+  if (!ok.length) return buildNetworthErrorEmbed(results);
+  const failed = results.filter((result) => !result.ok);
 
   const leader = ok[0].total;
   const ranking = ok
@@ -870,9 +894,9 @@ function buildNetworthEmbeds(results) {
     })
     .join('\n');
 
-  const summary = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(0xffaa00)
-    .setTitle('SkyBlock Networth - Comparison')
+    .setTitle('SkyBlock Networth - Money')
     .setDescription(
       `**Profile:** ${ok[0].profileName}\n` +
         `**Source:** SkyCofl (bazaar + auction)\n\n` +
@@ -884,6 +908,28 @@ function buildNetworthEmbeds(results) {
           : '')
     )
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
+}
+
+function networthFailedField(results) {
+  const failed = results.filter((result) => !result.ok);
+  if (!failed.length) return null;
+  return {
+    name: 'Failed',
+    value: failed
+      .map((result) => `• **${result.name}** — ${result.reason}`)
+      .join('\n')
+      .slice(0, 1024),
+  };
+}
+
+function buildNetworthCategoriesEmbed(results) {
+  const ok = results.filter((result) => result.ok).sort((a, b) => b.total - a.total);
+  if (!ok.length) return buildNetworthErrorEmbed(results);
+
+  const totalField = {
+    name: 'Total',
+    value: ok.map((result) => `**${result.name}:** ${formatNetworth(result.total)}`).join('\n'),
+  };
 
   const categoryFields = NETWORTH_GROUP_ORDER.map((group) => {
     const anyValue = ok.some((result) => (result.groups[group.key] || 0) > 0);
@@ -896,16 +942,26 @@ function buildNetworthEmbeds(results) {
     };
   }).filter(Boolean);
 
-  const details = new EmbedBuilder()
+  const fields = [totalField, ...categoryFields];
+  const failedField = networthFailedField(results);
+  if (failedField) fields.push(failedField);
+
+  return new EmbedBuilder()
     .setColor(0x00aaff)
-    .setTitle('Networth - Categories')
+    .setTitle('SkyBlock Networth - Categories')
     .setDescription(
       'Values in coins. Purse and the shared co-op bank are included in each total.'
     )
-    .addFields(categoryFields);
+    .addFields(fields)
+    .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
+}
+
+function buildNetworthItemsEmbed(results) {
+  const ok = results.filter((result) => result.ok).sort((a, b) => b.total - a.total);
+  if (!ok.length) return buildNetworthErrorEmbed(results);
 
   const holdingsFields = ok.map((result) => {
-    const lines = topHoldings(result.categories, 5).map(
+    const lines = (result.holdings || []).map(
       (item) => `• ${formatItemName(item.key)}: ${formatNetworth(item.value)}`
     );
     return {
@@ -914,36 +970,82 @@ function buildNetworthEmbeds(results) {
     };
   });
 
-  const holdings = new EmbedBuilder()
-    .setColor(0x9b59b6)
-    .setTitle('Networth - Top Sack Items')
-    .setDescription('Most valuable sack items per player.')
-    .addFields(holdingsFields);
+  const fields = [...holdingsFields];
+  const failedField = networthFailedField(results);
+  if (failedField) fields.push(failedField);
 
-  return [summary, details, holdings];
+  return new EmbedBuilder()
+    .setColor(0x9b59b6)
+    .setTitle('SkyBlock Networth - Top Sack Items')
+    .setDescription('Most valuable sack items per player.')
+    .addFields(fields)
+    .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
 
-async function handleNetworthSelect(interaction) {
-  const names = interaction.values.filter((value) => GLOSSY_PLAYERS.includes(value));
-  if (names.length < 2) {
-    return interaction.reply({ content: 'Select at least 2 players.', ephemeral: true });
+function buildNetworthView(results, view) {
+  if (view === 'categories') return buildNetworthCategoriesEmbed(results);
+  if (view === 'items') return buildNetworthItemsEmbed(results);
+  return buildNetworthMoneyEmbed(results);
+}
+
+async function handleNetworthCommand(interaction) {
+  const selected = [];
+  for (let index = 1; index <= 5; index += 1) {
+    const name = interaction.options.getString(`player${index}`);
+    if (name) selected.push(name);
   }
 
-  await interaction.deferUpdate();
+  const names = [...new Set(selected)];
+  if (names.length !== selected.length) {
+    return interaction.reply({
+      content: 'Choose a different player in each option.',
+      ephemeral: true,
+    });
+  }
+  if (!names.length) {
+    return interaction.reply({ content: 'Choose at least one player.', ephemeral: true });
+  }
+
+  await interaction.deferReply();
   try {
     const results = await getNetworthComparison(names);
+    const sessionId = createNetworthSession(results);
     await interaction.editReply({
-      content: '',
-      embeds: buildNetworthEmbeds(results),
-      components: [buildNetworthSelectRow(names)],
+      embeds: [buildNetworthView(results, 'money')],
+      components: [buildNetworthViewRow(sessionId, 'money')],
     });
   } catch (err) {
-    console.error('Error in /networth:', err.message);
-    await interaction.editReply({
-      content: 'Could not calculate networth right now. Try again later.',
-      embeds: [],
-      components: [buildNetworthSelectRow(names)],
+    console.error('Error in /networth command:', err.message);
+    await interaction.editReply('Could not calculate networth right now. Try again later.');
+  }
+}
+
+async function handleNetworthViewButton(interaction) {
+  const parts = interaction.customId.split('_');
+  if (parts.length !== 3) {
+    return interaction.reply({ content: 'Unknown networth view.', ephemeral: true });
+  }
+
+  const [, view, sessionId] = parts;
+  if (!NETWORTH_VIEWS.some((entry) => entry.key === view)) {
+    return interaction.reply({ content: 'Unknown networth view.', ephemeral: true });
+  }
+
+  const session = networthSessions.get(sessionId);
+  if (!session) {
+    return interaction.reply({
+      content: 'This comparison expired. Run /networth again.',
+      ephemeral: true,
     });
+  }
+
+  try {
+    await interaction.update({
+      embeds: [buildNetworthView(session.results, view)],
+      components: [buildNetworthViewRow(sessionId, view)],
+    });
+  } catch (err) {
+    console.error('Error switching /networth view:', err.message);
   }
 }
 
