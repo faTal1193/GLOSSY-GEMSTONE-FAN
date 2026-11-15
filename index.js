@@ -738,6 +738,28 @@ async function fetchNetworthInput(name) {
   return { ok: true, name, ...profile };
 }
 
+const HYPIXEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const hypixelCache = new Map();
+
+function cacheGet(key) {
+  const entry = hypixelCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expires <= Date.now()) {
+    hypixelCache.delete(key);
+    return undefined;
+  }
+  return entry.value;
+}
+
+function cacheSet(key, value) {
+  hypixelCache.set(key, { value, expires: Date.now() + HYPIXEL_CACHE_TTL_MS });
+}
+
+function findMemberEntry(members, uuid) {
+  const target = normalizeUuid(uuid);
+  return Object.entries(members || {}).find(([key]) => normalizeUuid(key) === target);
+}
+
 async function fetchMuseumData(uuid, profileId) {
   const res = await fetchJsonWithRetry(
     `https://sky.coflnet.com/api/profile/${uuid}/${profileId}/museum`,
@@ -747,9 +769,53 @@ async function fetchMuseumData(uuid, profileId) {
   return { items: res.json.items || {}, special: res.json.special || [] };
 }
 
+async function fetchHypixelNetworthData(uuid, profileId) {
+  const apiKey = process.env.HYPIXEL_API_KEY;
+  if (!apiKey) return null;
+
+  const headers = { 'API-Key': apiKey, Accept: 'application/json' };
+  const profileKey = `profile:${profileId}:${normalizeUuid(uuid)}`;
+  const museumKey = `museum:${profileId}:${normalizeUuid(uuid)}`;
+
+  let member = cacheGet(profileKey);
+  if (!member) {
+    const profileRes = await fetchJsonWithRetry(
+      `https://api.hypixel.net/v2/skyblock/profile?profile=${encodeURIComponent(profileId)}`,
+      { headers }
+    ).catch(() => null);
+    if (!profileRes || !profileRes.ok || !profileRes.json || profileRes.json.success === false) {
+      return null;
+    }
+    const memberEntry = findMemberEntry(profileRes.json.profile && profileRes.json.profile.members, uuid);
+    if (!memberEntry) return null;
+    member = memberEntry[1];
+    cacheSet(profileKey, member);
+  }
+
+  let museumData = cacheGet(museumKey);
+  if (!museumData) {
+    const museumRes = await fetchJsonWithRetry(
+      `https://api.hypixel.net/v2/skyblock/museum?profile=${encodeURIComponent(profileId)}`,
+      { headers }
+    ).catch(() => null);
+    if (museumRes && museumRes.ok && museumRes.json && museumRes.json.success !== false) {
+      const museumEntry = findMemberEntry(museumRes.json.members, uuid);
+      if (museumEntry) {
+        museumData = museumEntry[1];
+        cacheSet(museumKey, museumData);
+      }
+    }
+  }
+
+  return { member, museumData };
+}
+
 async function calculateNetworth(input) {
-  const { name, uuid, profileId, profileName, member } = input;
-  const museumData = await fetchMuseumData(uuid, profileId);
+  const { name, uuid, profileId, profileName, member: cachedMember } = input;
+  const fresh = await fetchHypixelNetworthData(uuid, profileId).catch(() => null);
+  const member = (fresh && fresh.member) || cachedMember;
+  const museumData = (fresh && fresh.museumData) || (await fetchMuseumData(uuid, profileId));
+
   let networth;
   try {
     const calculator = new ProfileNetworthCalculator(member, museumData, 0);
@@ -764,6 +830,7 @@ async function calculateNetworth(input) {
     name,
     profileName,
     total: Number(networth.networth) || 0,
+    source: fresh ? 'hypixel' : 'coflnet',
     groups: aggregateNetworth(types, networth.purse),
     holdings: topHoldings(types, 5),
   };
@@ -861,12 +928,15 @@ function buildNetworthMoneyEmbed(results) {
     })
     .join('\n');
 
+  const dataSource =
+    ok[0].source === 'hypixel' ? 'live Hypixel data' : 'SkyCofl cache (may lag SkyCrypt)';
+
   return new EmbedBuilder()
     .setColor(0xffaa00)
     .setTitle('SkyBlock Networth - Money')
     .setDescription(
       `**Profile:** ${ok[0].profileName}\n` +
-        `**Source:** SkyHelper valuation (matches SkyCrypt)\n\n` +
+        `**Source:** SkyHelper valuation · ${dataSource}\n\n` +
         ranking +
         (failed.length
           ? `\n\n**Failed:**\n${failed
@@ -913,10 +983,16 @@ function buildNetworthCategoriesEmbed(results) {
   const failedField = networthFailedField(results);
   if (failedField) fields.push(failedField);
 
+  const dataSource =
+    ok[0].source === 'hypixel' ? 'live Hypixel data' : 'SkyCofl cache (may lag SkyCrypt)';
+
   return new EmbedBuilder()
     .setColor(0x00aaff)
     .setTitle('SkyBlock Networth - Categories')
-    .setDescription('Values in coins. Purse is included; the shared co-op bank is excluded.')
+    .setDescription(
+      `Values in coins. Purse is included; the shared co-op bank is excluded.\n` +
+        `**Data:** ${dataSource}`
+    )
     .addFields(fields)
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
