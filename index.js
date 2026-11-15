@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, Events, REST, Routes, ActivityType } = require('discord.js');
 const { parse: parseNbt, simplify: simplifyNbt } = require('prismarine-nbt');
+const { ProfileNetworthCalculator } = require('skyhelper-networth');
 
 const client = new Client({
   intents: [
@@ -670,73 +671,47 @@ const NETWORTH_GROUP_ORDER = [
   { key: 'gemstones', label: 'Gemstones' },
   { key: 'sacks', label: 'Sacks' },
   { key: 'purse', label: 'Purse' },
-  { key: 'bank', label: 'Bank (co-op)' },
 ];
 
-function isGemstoneCategory(key) {
-  return /^(ROUGH|FLAWED|FINE|FLAWLESS|PERFECT)_.*_GEM$/.test(key);
-}
+const SKYHELPER_TYPE_GROUPS = {
+  armor: 'armor',
+  equipment: 'equipment',
+  wardrobe: 'wardrobe',
+  inventory: 'inventory',
+  enderchest: 'enderchest',
+  accessories: 'accessories',
+  pets: 'pets',
+  quiver: 'quiver',
+  potion_bag: 'potionBag',
+  personal_vault: 'vault',
+  storage: 'storage',
+  museum: 'museum',
+  rift: 'rift',
+  essence: 'essence',
+  sacks: 'sacks',
+  sacks_bag: 'sacks',
+  fishing_bag: 'sacks',
+};
 
-function isKnownNetworthCategory(key) {
-  return (
-    key === 'armor' ||
-    key === 'equipment' ||
-    key === 'wardrobe' ||
-    key === 'inventory' ||
-    key === 'enderchest' ||
-    key === 'talismans' ||
-    key === 'Pets' ||
-    key === 'quiver' ||
-    key === 'potion bag' ||
-    key === 'personal vault' ||
-    key === 'storage' ||
-    key === 'museum' ||
-    key === 'sacks' ||
-    key === 'coin purse' ||
-    key === 'bank' ||
-    key.startsWith('backpack ') ||
-    key.startsWith('rift ') ||
-    key.startsWith('essence ') ||
-    isGemstoneCategory(key)
-  );
-}
-
-function aggregateNetworth(categories, bank) {
+function aggregateNetworth(types, purse) {
   const groups = {};
   for (const group of NETWORTH_GROUP_ORDER) groups[group.key] = 0;
-  groups.bank = Number(bank) || 0;
 
-  for (const [key, rawValue] of Object.entries(categories || {})) {
-    const value = Number(rawValue) || 0;
-    if (key === 'armor') groups.armor += value;
-    else if (key === 'equipment') groups.equipment += value;
-    else if (key === 'wardrobe') groups.wardrobe += value;
-    else if (key === 'inventory') groups.inventory += value;
-    else if (key === 'enderchest') groups.enderchest += value;
-    else if (key.startsWith('backpack ')) groups.backpacks += value;
-    else if (key === 'talismans') groups.accessories += value;
-    else if (key === 'Pets') groups.pets += value;
-    else if (key === 'quiver') groups.quiver += value;
-    else if (key === 'potion bag') groups.potionBag += value;
-    else if (key === 'personal vault') groups.vault += value;
-    else if (key === 'storage') groups.storage += value;
-    else if (key === 'museum') groups.museum += value;
-    else if (key.startsWith('rift ')) groups.rift += value;
-    else if (key.startsWith('essence ')) groups.essence += value;
-    else if (isGemstoneCategory(key)) groups.gemstones += value;
-    else if (key === 'coin purse') groups.purse += value;
-    else groups.sacks += value;
+  for (const [type, groupKey] of Object.entries(SKYHELPER_TYPE_GROUPS)) {
+    const entry = types && types[type];
+    if (entry) groups[groupKey] += Number(entry.total) || 0;
   }
-
+  groups.purse = Number(purse) || 0;
   return groups;
 }
 
-function topHoldings(categories, limit = 5) {
-  return Object.entries(categories || {})
-    .filter(([key, value]) => Number(value) > 0 && !isKnownNetworthCategory(key))
-    .sort((a, b) => Number(b[1]) - Number(a[1]))
+function topHoldings(types, limit = 5) {
+  const sackItems = types && types.sacks && Array.isArray(types.sacks.items) ? types.sacks.items : [];
+  return sackItems
+    .filter((item) => item && Number(item.price) > 0)
+    .sort((a, b) => Number(b.price) - Number(a.price))
     .slice(0, limit)
-    .map(([key, value]) => ({ key, value: Number(value) }));
+    .map((item) => ({ key: item.id || item.name || 'unknown', value: Number(item.price) }));
 }
 
 function formatItemName(id) {
@@ -760,42 +735,27 @@ function formatNetworth(value) {
 async function fetchNetworthInput(name) {
   const profile = await fetchCoflnetMember(name);
   if (!profile.ok) return { ok: false, name, reason: profile.reason };
-  const bank = Number(profile.member.profile && profile.member.profile.bank_account) || 0;
-  return { ok: true, name, ...profile, bank };
+  return { ok: true, name, ...profile };
 }
 
-async function calculateNetworth(input, sharedBank) {
-  const { name, uuid, profileName, profileId, member } = input;
-  const body = {
-    profile_id: profileId,
-    cute_name: profileName,
-    selected: true,
-    banking: { balance: sharedBank },
-    members: { [uuid]: member },
-  };
-  const res = await fetchJsonWithRetry('https://sky.coflnet.com/api/networth', {
-    method: 'POST',
-    headers: { ...COFLNET_HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    return { ok: false, name, reason: `SkyCofl: ${res.error || `HTTP ${res.status}`}` };
+async function calculateNetworth(input) {
+  const { name, profileName, member } = input;
+  let networth;
+  try {
+    const calculator = new ProfileNetworthCalculator(member, undefined, 0);
+    networth = await calculator.getNetworth();
+  } catch (err) {
+    return { ok: false, name, reason: `Networth: ${err.message}` };
   }
 
-  const memberValue = res.json && res.json.member && res.json.member[uuid];
-  if (!memberValue) {
-    return { ok: false, name, reason: 'networth indisponível na SkyCofl' };
-  }
-
-  const categories = memberValue.valuePerCategory || {};
+  const types = networth.types || {};
   return {
     ok: true,
     name,
     profileName,
-    total: Number(res.json.fullValue) || 0,
-    bank: sharedBank,
-    groups: aggregateNetworth(categories, sharedBank),
-    holdings: topHoldings(categories, 5),
+    total: Number(networth.networth) || 0,
+    groups: aggregateNetworth(types, networth.purse),
+    holdings: topHoldings(types, 5),
   };
 }
 
@@ -808,12 +768,9 @@ async function getNetworthComparison(names) {
     }))
   );
 
-  const success = inputs.filter((input) => input.ok);
-  const sharedBank = success.length ? Math.max(...success.map((input) => input.bank || 0)) : 0;
-
   return mapLimit(inputs, 3, (input) =>
     input.ok
-      ? calculateNetworth(input, sharedBank).catch((err) => ({
+      ? calculateNetworth(input).catch((err) => ({
           ok: false,
           name: input.name,
           reason: `SkyCofl: ${err.message}`,
@@ -899,7 +856,7 @@ function buildNetworthMoneyEmbed(results) {
     .setTitle('SkyBlock Networth - Money')
     .setDescription(
       `**Profile:** ${ok[0].profileName}\n` +
-        `**Source:** SkyCofl (bazaar + auction)\n\n` +
+        `**Source:** SkyHelper valuation (matches SkyCrypt)\n\n` +
         ranking +
         (failed.length
           ? `\n\n**Failed:**\n${failed
@@ -933,7 +890,7 @@ function buildNetworthCategoriesEmbed(results) {
 
   const categoryFields = NETWORTH_GROUP_ORDER.map((group) => {
     const anyValue = ok.some((result) => (result.groups[group.key] || 0) > 0);
-    if (!anyValue && group.key !== 'purse' && group.key !== 'bank') return null;
+    if (!anyValue && group.key !== 'purse') return null;
     return {
       name: group.label,
       value: ok
@@ -949,9 +906,7 @@ function buildNetworthCategoriesEmbed(results) {
   return new EmbedBuilder()
     .setColor(0x00aaff)
     .setTitle('SkyBlock Networth - Categories')
-    .setDescription(
-      'Values in coins. Purse and the shared co-op bank are included in each total.'
-    )
+    .setDescription('Values in coins. Purse is included; the shared co-op bank is excluded.')
     .addFields(fields)
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
