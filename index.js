@@ -21,7 +21,6 @@ function setBotPresence() {
 }
 
 const GLOSSY_PLAYERS = ['1dinos', 'shadowwarrior255', 'forcabowman', 'Blazecraft_edu', 'V1D_exe'];
-const GLOSSY_PLAYER_CHOICES = GLOSSY_PLAYERS.map((name) => ({ name, value: name }));
 
 const commands = [
   {
@@ -42,14 +41,7 @@ const commands = [
   },
   {
     name: 'networth',
-    description: 'Compare the networth of 1-5 players from the glossy list (SkyCofl prices)',
-    options: GLOSSY_PLAYERS.slice(0, 5).map((_, index) => ({
-      name: `player${index + 1}`,
-      description: index === 0 ? 'Player 1 (required)' : `Player ${index + 1} (optional)`,
-      type: 3,
-      required: index === 0,
-      choices: GLOSSY_PLAYER_CHOICES,
-    })),
+    description: 'Compare the networth of all glossy players',
   },
   {
     name: 'alert',
@@ -911,23 +903,8 @@ function buildNetworthErrorEmbed(results) {
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
 
-const NETWORTH_CHART_COLORS = [
-  '#ffaa00',
-  '#00d26a',
-  '#00aaff',
-  '#9b59b6',
-  '#ff6b6b',
-  '#f1c40f',
-  '#1abc9c',
-  '#e67e22',
-  '#3498db',
-  '#e84393',
-  '#2ecc71',
-  '#95a5a6',
-];
-
 const NETWORTH_CHART_FORMATTER =
-  "function(v){return v>=1e9?(v/1e9).toFixed(2)+'B':v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'k':Math.round(v)}";
+  "function(v){return Math.round(v).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g,',')}";
 
 function quickChartUrl(config, width, height) {
   return (
@@ -953,7 +930,7 @@ function buildNetworthBarChart({ labels, values, colors, width = 640 }) {
     },
     options: {
       indexAxis: 'y',
-      layout: { padding: { right: 70 } },
+      layout: { padding: { right: 110 } },
       plugins: {
         legend: { display: false },
         datalabels: {
@@ -985,23 +962,6 @@ function buildNetworthTotalsChart(ok) {
     labels: ok.map((result) => result.name),
     values: ok.map((result) => result.total),
     colors: '#ffaa00',
-  });
-}
-
-function buildNetworthCategoriesChart(result) {
-  const rows = NETWORTH_GROUP_ORDER.map((group, index) => ({
-    label: group.label,
-    value: result.groups[group.key] || 0,
-    color: NETWORTH_CHART_COLORS[index % NETWORTH_CHART_COLORS.length],
-  }))
-    .filter((row) => row.value > 0)
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 10);
-  if (!rows.length) return null;
-  return buildNetworthBarChart({
-    labels: rows.map((row) => row.label),
-    values: rows.map((row) => row.value),
-    colors: rows.map((row) => row.color),
   });
 }
 
@@ -1098,21 +1058,16 @@ function buildNetworthCategoriesEmbed(results) {
 
   const dataSource =
     ok[0].source === 'hypixel' ? 'live Hypixel data' : 'SkyCofl cache (may lag SkyCrypt)';
-  const chartUrl = ok.length > 1 ? buildNetworthCategoriesChart(ok[0]) : null;
 
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(0x00aaff)
     .setTitle('SkyBlock Networth - Categories')
     .setDescription(
       `Values in coins. Purse is included; the shared co-op bank is excluded.\n` +
-        `**Data:** ${dataSource}` +
-        (chartUrl ? `\n**Chart:** ${ok[0].name}` : '')
+        `**Data:** ${dataSource}`
     )
     .addFields(fields)
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
-
-  if (chartUrl) embed.setImage(chartUrl);
-  return embed;
 }
 
 function buildNetworthItemsEmbed(results) {
@@ -1155,26 +1110,9 @@ function buildNetworthView(results, view) {
 }
 
 async function handleNetworthCommand(interaction) {
-  const selected = [];
-  for (let index = 1; index <= 5; index += 1) {
-    const name = interaction.options.getString(`player${index}`);
-    if (name) selected.push(name);
-  }
-
-  const names = [...new Set(selected)];
-  if (names.length !== selected.length) {
-    return interaction.reply({
-      content: 'Choose a different player in each option.',
-      ephemeral: true,
-    });
-  }
-  if (!names.length) {
-    return interaction.reply({ content: 'Choose at least one player.', ephemeral: true });
-  }
-
   await interaction.deferReply();
   try {
-    const results = await getNetworthComparison(names);
+    const results = await getNetworthComparison(GLOSSY_PLAYERS);
     const sessionId = createNetworthSession(results);
     await interaction.editReply({
       embeds: [buildNetworthView(results, 'money')],
