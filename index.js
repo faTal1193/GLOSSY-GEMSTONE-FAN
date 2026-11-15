@@ -904,7 +904,7 @@ function buildNetworthErrorEmbed(results) {
 }
 
 const NETWORTH_CHART_FORMATTER =
-  "function(v){return Math.round(v).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g,',')}";
+  "function(v){return Math.round(v).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g,'.')}";
 
 function quickChartUrl(config, width, height) {
   return (
@@ -962,21 +962,6 @@ function buildNetworthTotalsChart(ok) {
     labels: ok.map((result) => result.name),
     values: ok.map((result) => result.total),
     colors: '#ffaa00',
-  });
-}
-
-function buildNetworthItemsChart(result) {
-  const rows = (result.holdings || [])
-    .filter((item) => Number(item.value) > 0)
-    .slice(0, 8);
-  if (!rows.length) return null;
-  return buildNetworthBarChart({
-    labels: rows.map((item) => {
-      const label = formatItemName(item.key);
-      return label.length > 20 ? `${label.slice(0, 18)}...` : label;
-    }),
-    values: rows.map((item) => Number(item.value)),
-    colors: '#9b59b6',
   });
 }
 
@@ -1088,19 +1073,12 @@ function buildNetworthItemsEmbed(results) {
   const failedField = networthFailedField(results);
   if (failedField) fields.push(failedField);
 
-  const chartUrl = ok.length > 1 ? buildNetworthItemsChart(ok[0]) : null;
-
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(0x9b59b6)
     .setTitle('SkyBlock Networth - Top Sack Items')
-    .setDescription(
-      `Most valuable sack items per player.` + (chartUrl ? `\n**Chart:** ${ok[0].name}` : '')
-    )
+    .setDescription('Most valuable sack items per player.')
     .addFields(fields)
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
-
-  if (chartUrl) embed.setImage(chartUrl);
-  return embed;
 }
 
 function buildNetworthView(results, view) {
