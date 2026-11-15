@@ -738,12 +738,7 @@ async function fetchNetworthInput(name) {
   return { ok: true, name, ...profile };
 }
 
-function findMemberEntry(members, uuid) {
-  const target = normalizeUuid(uuid);
-  return Object.entries(members || {}).find(([key]) => normalizeUuid(key) === target);
-}
-
-async function fetchCoflnetMuseumData(uuid, profileId) {
+async function fetchMuseumData(uuid, profileId) {
   const res = await fetchJsonWithRetry(
     `https://sky.coflnet.com/api/profile/${uuid}/${profileId}/museum`,
     { headers: COFLNET_HEADERS }
@@ -752,43 +747,9 @@ async function fetchCoflnetMuseumData(uuid, profileId) {
   return { items: res.json.items || {}, special: res.json.special || [] };
 }
 
-async function fetchHypixelNetworthData(uuid, profileId) {
-  const apiKey = process.env.HYPIXEL_API_KEY;
-  if (!apiKey) return null;
-
-  const headers = { 'API-Key': apiKey, Accept: 'application/json' };
-  const profileRes = await fetchJsonWithRetry(
-    `https://api.hypixel.net/v2/skyblock/profile?profile=${encodeURIComponent(profileId)}`,
-    { headers }
-  ).catch(() => null);
-  if (!profileRes || !profileRes.ok || !profileRes.json || profileRes.json.success === false) {
-    return null;
-  }
-
-  const profile = profileRes.json.profile;
-  const memberEntry = findMemberEntry(profile && profile.members, uuid);
-  if (!memberEntry) return null;
-
-  let museumData;
-  const museumRes = await fetchJsonWithRetry(
-    `https://api.hypixel.net/v2/skyblock/museum?profile=${encodeURIComponent(profileId)}`,
-    { headers }
-  ).catch(() => null);
-  if (museumRes && museumRes.ok && museumRes.json && museumRes.json.success !== false) {
-    const museumEntry = findMemberEntry(museumRes.json.members, uuid);
-    if (museumEntry) museumData = museumEntry[1];
-  }
-
-  return { member: memberEntry[1], museumData };
-}
-
 async function calculateNetworth(input) {
-  const { name, uuid, profileId, profileName, member: cachedMember } = input;
-  const fresh = await fetchHypixelNetworthData(uuid, profileId).catch(() => null);
-  const member = (fresh && fresh.member) || cachedMember;
-  const museumData =
-    (fresh && fresh.museumData) || (await fetchCoflnetMuseumData(uuid, profileId));
-
+  const { name, uuid, profileId, profileName, member } = input;
+  const museumData = await fetchMuseumData(uuid, profileId);
   let networth;
   try {
     const calculator = new ProfileNetworthCalculator(member, museumData, 0);
@@ -803,7 +764,6 @@ async function calculateNetworth(input) {
     name,
     profileName,
     total: Number(networth.networth) || 0,
-    source: fresh ? 'hypixel' : 'coflnet',
     groups: aggregateNetworth(types, networth.purse),
     holdings: topHoldings(types, 5),
   };
@@ -901,17 +861,12 @@ function buildNetworthMoneyEmbed(results) {
     })
     .join('\n');
 
-  const dataSource =
-    ok[0].source === 'hypixel'
-      ? 'live Hypixel data'
-      : 'SkyCofl cache (may lag SkyCrypt)';
-
   return new EmbedBuilder()
     .setColor(0xffaa00)
     .setTitle('SkyBlock Networth - Money')
     .setDescription(
       `**Profile:** ${ok[0].profileName}\n` +
-        `**Source:** SkyHelper valuation · ${dataSource}\n\n` +
+        `**Source:** SkyHelper valuation (matches SkyCrypt)\n\n` +
         ranking +
         (failed.length
           ? `\n\n**Failed:**\n${failed
@@ -958,16 +913,10 @@ function buildNetworthCategoriesEmbed(results) {
   const failedField = networthFailedField(results);
   if (failedField) fields.push(failedField);
 
-  const dataSource =
-    ok[0].source === 'hypixel' ? 'live Hypixel data' : 'SkyCofl cache (may lag SkyCrypt)';
-
   return new EmbedBuilder()
     .setColor(0x00aaff)
     .setTitle('SkyBlock Networth - Categories')
-    .setDescription(
-      `Values in coins. Purse is included; the shared co-op bank is excluded.\n` +
-        `**Data:** ${dataSource}`
-    )
+    .setDescription('Values in coins. Purse is included; the shared co-op bank is excluded.')
     .addFields(fields)
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
