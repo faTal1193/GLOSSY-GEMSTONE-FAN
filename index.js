@@ -911,6 +911,115 @@ function buildNetworthErrorEmbed(results) {
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
 
+const NETWORTH_CHART_COLORS = [
+  '#ffaa00',
+  '#00d26a',
+  '#00aaff',
+  '#9b59b6',
+  '#ff6b6b',
+  '#f1c40f',
+  '#1abc9c',
+  '#e67e22',
+  '#3498db',
+  '#e84393',
+  '#2ecc71',
+  '#95a5a6',
+];
+
+const NETWORTH_CHART_FORMATTER =
+  "function(v){return v>=1e9?(v/1e9).toFixed(2)+'B':v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'k':Math.round(v)}";
+
+function quickChartUrl(config, width, height) {
+  return (
+    `https://quickchart.io/chart?width=${width}&height=${height}&version=3` +
+    `&backgroundColor=36393f&c=${encodeURIComponent(JSON.stringify(config))}`
+  );
+}
+
+function buildNetworthBarChart({ labels, values, colors, width = 640 }) {
+  if (!labels.length) return null;
+  const height = Math.min(640, 90 + labels.length * 44);
+  const config = {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          data: values.map((value) => Math.round(value)),
+          backgroundColor: colors,
+          borderRadius: 6,
+        },
+      ],
+    },
+    options: {
+      indexAxis: 'y',
+      layout: { padding: { right: 70 } },
+      plugins: {
+        legend: { display: false },
+        datalabels: {
+          anchor: 'end',
+          align: 'right',
+          offset: 4,
+          clamp: true,
+          color: '#fff',
+          formatter: NETWORTH_CHART_FORMATTER,
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#fff', callback: NETWORTH_CHART_FORMATTER },
+          grid: { color: '#ffffff14' },
+        },
+        y: {
+          ticks: { color: '#fff' },
+          grid: { display: false },
+        },
+      },
+    },
+  };
+  return quickChartUrl(config, width, height);
+}
+
+function buildNetworthTotalsChart(ok) {
+  return buildNetworthBarChart({
+    labels: ok.map((result) => result.name),
+    values: ok.map((result) => result.total),
+    colors: '#ffaa00',
+  });
+}
+
+function buildNetworthCategoriesChart(result) {
+  const rows = NETWORTH_GROUP_ORDER.map((group, index) => ({
+    label: group.label,
+    value: result.groups[group.key] || 0,
+    color: NETWORTH_CHART_COLORS[index % NETWORTH_CHART_COLORS.length],
+  }))
+    .filter((row) => row.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 10);
+  if (!rows.length) return null;
+  return buildNetworthBarChart({
+    labels: rows.map((row) => row.label),
+    values: rows.map((row) => row.value),
+    colors: rows.map((row) => row.color),
+  });
+}
+
+function buildNetworthItemsChart(result) {
+  const rows = (result.holdings || [])
+    .filter((item) => Number(item.value) > 0)
+    .slice(0, 8);
+  if (!rows.length) return null;
+  return buildNetworthBarChart({
+    labels: rows.map((item) => {
+      const label = formatItemName(item.key);
+      return label.length > 20 ? `${label.slice(0, 18)}...` : label;
+    }),
+    values: rows.map((item) => Number(item.value)),
+    colors: '#9b59b6',
+  });
+}
+
 function buildNetworthMoneyEmbed(results) {
   const ok = results.filter((result) => result.ok).sort((a, b) => b.total - a.total);
   if (!ok.length) return buildNetworthErrorEmbed(results);
@@ -931,7 +1040,7 @@ function buildNetworthMoneyEmbed(results) {
   const dataSource =
     ok[0].source === 'hypixel' ? 'live Hypixel data' : 'SkyCofl cache (may lag SkyCrypt)';
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(0xffaa00)
     .setTitle('SkyBlock Networth - Money')
     .setDescription(
@@ -945,6 +1054,10 @@ function buildNetworthMoneyEmbed(results) {
           : '')
     )
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
+
+  const chartUrl = ok.length > 1 ? buildNetworthTotalsChart(ok) : null;
+  if (chartUrl) embed.setImage(chartUrl);
+  return embed;
 }
 
 function networthFailedField(results) {
@@ -985,16 +1098,21 @@ function buildNetworthCategoriesEmbed(results) {
 
   const dataSource =
     ok[0].source === 'hypixel' ? 'live Hypixel data' : 'SkyCofl cache (may lag SkyCrypt)';
+  const chartUrl = ok.length > 1 ? buildNetworthCategoriesChart(ok[0]) : null;
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(0x00aaff)
     .setTitle('SkyBlock Networth - Categories')
     .setDescription(
       `Values in coins. Purse is included; the shared co-op bank is excluded.\n` +
-        `**Data:** ${dataSource}`
+        `**Data:** ${dataSource}` +
+        (chartUrl ? `\n**Chart:** ${ok[0].name}` : '')
     )
     .addFields(fields)
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
+
+  if (chartUrl) embed.setImage(chartUrl);
+  return embed;
 }
 
 function buildNetworthItemsEmbed(results) {
@@ -1015,12 +1133,19 @@ function buildNetworthItemsEmbed(results) {
   const failedField = networthFailedField(results);
   if (failedField) fields.push(failedField);
 
-  return new EmbedBuilder()
+  const chartUrl = ok.length > 1 ? buildNetworthItemsChart(ok[0]) : null;
+
+  const embed = new EmbedBuilder()
     .setColor(0x9b59b6)
     .setTitle('SkyBlock Networth - Top Sack Items')
-    .setDescription('Most valuable sack items per player.')
+    .setDescription(
+      `Most valuable sack items per player.` + (chartUrl ? `\n**Chart:** ${ok[0].name}` : '')
+    )
     .addFields(fields)
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
+
+  if (chartUrl) embed.setImage(chartUrl);
+  return embed;
 }
 
 function buildNetworthView(results, view) {
