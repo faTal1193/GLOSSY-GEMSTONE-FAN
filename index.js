@@ -738,11 +738,21 @@ async function fetchNetworthInput(name) {
   return { ok: true, name, ...profile };
 }
 
+async function fetchMuseumData(uuid, profileId) {
+  const res = await fetchJsonWithRetry(
+    `https://sky.coflnet.com/api/profile/${uuid}/${profileId}/museum`,
+    { headers: COFLNET_HEADERS }
+  ).catch(() => ({ ok: false }));
+  if (!res.ok || !res.json) return undefined;
+  return { items: res.json.items || {}, special: res.json.special || [] };
+}
+
 async function calculateNetworth(input) {
-  const { name, profileName, member } = input;
+  const { name, uuid, profileId, profileName, member } = input;
+  const museumData = await fetchMuseumData(uuid, profileId);
   let networth;
   try {
-    const calculator = new ProfileNetworthCalculator(member, undefined, 0);
+    const calculator = new ProfileNetworthCalculator(member, museumData, 0);
     networth = await calculator.getNetworth();
   } catch (err) {
     return { ok: false, name, reason: `Networth: ${err.message}` };
