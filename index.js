@@ -903,9 +903,6 @@ function buildNetworthErrorEmbed(results) {
     .setFooter({ text: `sky.coflnet.com | build ${DEPLOY_LABEL}` });
 }
 
-const NETWORTH_CHART_FORMATTER =
-  "function(v){return Math.round(v).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g,'.')}";
-
 function quickChartUrl(config, width, height) {
   return (
     `https://quickchart.io/chart?width=${width}&height=${height}&version=3` +
@@ -934,17 +931,23 @@ function buildNetworthBarChart({ labels, values, colors, width = 640 }) {
       plugins: {
         legend: { display: false },
         datalabels: {
+          display: true,
           anchor: 'end',
           align: 'right',
           offset: 4,
           clamp: true,
           color: '#fff',
-          formatter: NETWORTH_CHART_FORMATTER,
+        },
+        tickFormat: {
+          locale: 'de-DE',
+          useGrouping: true,
+          maximumFractionDigits: 0,
+          applyToDataLabels: true,
         },
       },
       scales: {
         x: {
-          ticks: { color: '#fff', callback: NETWORTH_CHART_FORMATTER },
+          ticks: { color: '#fff' },
           grid: { color: '#ffffff14' },
         },
         y: {
